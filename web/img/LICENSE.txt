@@ -1,0 +1,15 @@
+Картинки в этой папке не подпадают под лицензию MIT из корня репозитория.
+
+icon.ico, icon-64.png, line-mic.webp и line-reel.webp сгенерированы моделью
+Qwen-Image-2.1. Она выпущена под Qwen Research License Agreement, которая
+разрешает пользоваться моделью только в некоммерческих целях:
+https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE
+
+Картинки можно использовать вместе с этой программой и в некоммерческих форках.
+Для коммерческого использования замени их своими. Программа работает и без них:
+окно просто откроется без иконки и рисунков.
+
+The images in this folder are not covered by the MIT license of the repository.
+They were generated with Qwen-Image-2.1, released under the Qwen Research
+License Agreement, which allows non-commercial use only. Replace them with your
+own before any commercial use.

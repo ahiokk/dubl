@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<title>Дубль</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Значки в одном стиле: контур 1.75, скругления как у Lucide -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5M9 13h6M9 17h6"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-headphones" viewBox="0 0 24 24"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/></symbol>
+  <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></symbol>
+</svg>
+
+<header class="bar">
+  <div class="brand">
+    <img src="img/icon-64.png" alt="" width="24" height="24">
+    <span>Дубль</span>
+  </div>
+
+  <nav class="modes" aria-label="Разделы">
+    <button class="mode" data-screen="meeting" aria-current="page">Запись</button>
+    <button class="mode" data-screen="interview">Тренажёр</button>
+    <button class="mode" data-screen="archive">Архив</button>
+  </nav>
+
+  <div class="bar-end">
+    <button id="navLive" class="live-chip" hidden title="Вернуться к записи">
+      <span class="lamp"></span><span id="navLiveText">Запись</span>
+    </button>
+    <button id="asrOpen" class="asr-chip" title="Чем распознаётся речь. Поменять можно в настройках">…</button>
+    <button class="icon-btn" data-screen="settings" aria-label="Настройки" title="Настройки">
+      <svg class="ic" aria-hidden="true"><use href="#i-sliders"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- ============================================================ запись -->
+  <section id="screen-meeting" class="screen" data-state="idle">
+
+    <div class="transport">
+      <button id="record" class="btn rec big">
+        <span id="recDot" class="dot-rec"></span><span id="recLabel">Начать запись</span>
+      </button>
+      <div id="clock" class="clock" hidden>0:00</div>
+      <div id="state" class="state" data-kind="idle" role="status" aria-live="polite">
+        <span id="stateText" class="state-text">Готово к записи</span>
+        <span id="stateSub" class="state-sub"></span>
+      </div>
+      <div id="fileActions" class="transport-end" hidden>
+        <button id="copyPath" class="btn" title="Путь к файлу расшифровки, чтобы отдать его агенту">
+          <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Путь к файлу
+        </button>
+        <button id="openDir" class="btn icon" title="Открыть папку с записями" aria-label="Открыть папку с записями">
+          <svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="tracks">
+      <div class="track me">
+        <div class="track-head">
+          <span class="track-name">Я</span>
+          <select id="mic" aria-label="Мой микрофон" title="Микрофон"></select>
+        </div>
+        <canvas id="waveMe" class="wave" aria-label="Громкость моего микрофона"></canvas>
+      </div>
+      <div class="track them">
+        <div class="track-head">
+          <span class="track-name">Собеседник</span>
+          <select id="spk" aria-label="Откуда брать звук собеседника" title="Звук в наушниках"></select>
+        </div>
+        <canvas id="waveThem" class="wave" aria-label="Громкость собеседника"></canvas>
+      </div>
+    </div>
+
+    <div class="sheet">
+      <div id="scroll" class="feed">
+        <div id="intro" class="intro">
+          <h1>Запись встречи</h1>
+          <p>Две дорожки: сверху твой микрофон, снизу звук в наушниках. Разговор пойдёт
+            стенограммой сюда и сразу в файл, путь к нему можно отдать ИИ-агенту прямо
+            во время созвона.</p>
+          <p class="hint">
+            <svg class="ic" aria-hidden="true"><use href="#i-headphones"/></svg>
+            Сиди в наушниках. Из колонок микрофон услышит собеседника, и реплики перепутаются.
+          </p>
+        </div>
+        <div id="lines" class="utts"></div>
+      </div>
+      <button id="toBottom" class="btn to-bottom" hidden>
+        <svg class="ic" aria-hidden="true"><use href="#i-arrow-down"/></svg>К последней реплике
+      </button>
+    </div>
+  </section>
+
+  <!-- ========================================================== тренажёр -->
+  <section id="screen-interview" class="screen scroll" hidden>
+
+    <div id="ivSetup" class="page">
+      <header class="page-head">
+        <div>
+          <h1>Тренажёр собеседования</h1>
+          <p>Отвечаешь на вопросы вслух. Программа засекает время, считает слова-паразиты
+            и переспрашивает, если главное не прозвучало.</p>
+        </div>
+        <div class="art" style="--src:url(img/line-mic.webp); width:150px; height:112px"></div>
+      </header>
+
+      <div class="row">
+        <div class="row-label">Банк вопросов</div>
+        <div class="row-field">
+          <div id="ivBanks" class="banks" role="radiogroup" aria-label="Банк вопросов"></div>
+          <div class="own">
+            <button id="ivOwnToggle" class="link">Сделать свой банк под вакансию</button>
+            <div id="ivOwn" class="own-box" hidden>
+              <p>Банк это YAML-файл в папке «вопросы», программа подхватит его сама.
+                Скопируй запрос, допиши в конец текст вакансии и отправь в любой чат
+                с нейросетью. Ответ сохрани в папку файлом с расширением .yaml.</p>
+              <div class="btns">
+                <button id="ivCopyBankPrompt" class="btn">
+                  <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Скопировать запрос
+                </button>
+                <button id="ivBanksDir" class="btn quiet">
+                  <svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Открыть папку
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="row-label">Темы<small id="ivBankNote"></small></div>
+        <div class="row-field">
+          <div id="ivPresets" class="seg" role="radiogroup" aria-label="Какие темы">
+            <button data-preset="all">Все</button>
+            <button data-preset="soft">Поведенческие</button>
+            <button data-preset="tech">Технические</button>
+            <button data-preset="custom">Выбрать</button>
+          </div>
+          <div id="ivThemes" class="chips" hidden></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="row-label">Строгость</div>
+        <div class="row-field">
+          <div id="ivLevels" class="seg" role="radiogroup" aria-label="Строгость"></div>
+          <p id="ivLevelDesc" class="level-desc"></p>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="row-label">Порядок</div>
+        <div class="row-field">
+          <label class="check" style="padding-top:8px">
+            <input id="ivShuffle" type="checkbox">
+            <span>Перемешать вопросы, чтобы не запоминать порядок</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="row-label">Микрофон</div>
+        <div class="row-field">
+          <div class="mic-row">
+            <select id="ivMic" aria-label="Микрофон"></select>
+            <button id="ivCheckMic" class="btn">Проверить</button>
+            <canvas id="waveCheck" class="wave me" aria-label="Громкость при проверке"></canvas>
+          </div>
+          <p id="ivCheckText" class="help">Нажми «Проверить» и скажи пару слов. Дорожка должна ожить.</p>
+        </div>
+      </div>
+
+      <details id="ivHistoryCard" class="history" hidden>
+        <summary>Прошлые тренировки</summary>
+        <div id="ivHistory" class="history-list"></div>
+      </details>
+
+      <div class="start">
+        <div class="start-sum">
+          <b id="ivSumCount">0 вопросов</b>
+          <span id="ivSumMeta"></span>
+        </div>
+        <button id="ivStart" class="btn rec big"><span class="dot-rec"></span>Начать тренировку</button>
+      </div>
+    </div>
+
+    <!-- дубль -->
+    <div id="ivAsk" class="take" hidden>
+      <header class="take-top">
+        <span id="ivProgress"></span>
+        <div id="ivPips" class="pips"></div>
+        <button id="ivFinish" class="btn quiet">Завершить</button>
+      </header>
+      <div class="take-body">
+        <div class="take-inner">
+          <span id="ivCategory" class="cat"></span>
+          <h1 id="ivQuestion" class="question"></h1>
+          <p id="ivTarget"></p>
+
+          <div class="timeline">
+            <canvas id="waveTake" class="wave" aria-label="Дорожка ответа"></canvas>
+            <div id="takeScale" class="scale"></div>
+          </div>
+
+          <div class="take-ctl">
+            <button id="ivAnswer" class="rec-round" aria-label="Записать ответ"><span class="dot-rec"></span></button>
+            <div>
+              <div id="ivTimer" class="timer">0:00</div>
+              <div id="ivAnswerLabel" class="take-label">Записать ответ</div>
+            </div>
+          </div>
+          <p id="ivHint" class="help" aria-live="polite"></p>
+          <button id="ivSkip" class="btn quiet">Пропустить вопрос</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- разбор дубля -->
+    <div id="ivResult" class="page narrow result" hidden>
+      <header id="ivVerdict" class="result-head" data-kind="good">
+        <span class="verdict-mark"><svg class="ic" aria-hidden="true"><use id="ivVerdictIcon" href="#i-check"/></svg></span>
+        <div>
+          <small id="ivAttempt"></small>
+          <h1 id="ivClean"></h1>
+        </div>
+      </header>
+
+      <div class="timeline">
+        <canvas id="waveResult" class="wave" aria-label="Дорожка этого дубля"></canvas>
+        <div id="resultScale" class="scale"></div>
+      </div>
+
+      <div id="ivRows" class="measures"></div>
+      <div id="ivDelta" class="note" hidden></div>
+      <div id="ivClosed" class="note" hidden></div>
+      <div id="ivTheses" class="checks" hidden></div>
+
+      <div id="ivFollowup" class="followup" hidden>
+        <div>
+          <small>Уточняющий вопрос</small>
+          <p id="ivFollowupText"></p>
+        </div>
+        <button id="ivFollowupAnswer" class="btn">Ответить</button>
+      </div>
+
+      <details class="said">
+        <summary>Что ты сказал</summary>
+        <div id="ivText" class="said-text"></div>
+      </details>
+
+      <div class="actions">
+        <button id="ivRetry" class="btn">Ещё дубль</button>
+        <button id="ivNext" class="btn">Следующий вопрос</button>
+        <button id="ivFinish2" class="btn quiet end">Завершить тренировку</button>
+      </div>
+    </div>
+
+    <!-- конец -->
+    <div id="ivDone" class="page narrow done" hidden>
+      <h1 id="ivDoneTitle">Тренировка закончена</h1>
+      <p id="ivDoneText"></p>
+      <div id="ivReview" class="review">
+        <button id="ivCopyPrompt" class="btn primary big">
+          <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Скопировать запрос для нейросети
+        </button>
+        <p class="help">Вставь его в любой чат с нейросетью. Она разберёт ответы по смыслу:
+          что звучит слабо и что стоит добавить.</p>
+      </div>
+      <div class="actions">
+        <button id="ivAgain" class="btn">Новая тренировка</button>
+        <button id="ivCopyPath" class="btn quiet">Копировать путь к разбору</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= архив -->
+  <section id="screen-archive" class="screen" hidden>
+    <aside class="ar-side">
+      <div class="ar-side-head">
+        <div class="search">
+          <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="arSearch" type="search" placeholder="Поиск по тексту записей…"
+                 spellcheck="false" aria-label="Поиск по тексту записей">
+        </div>
+        <div class="seg ar-filters" role="radiogroup" aria-label="Какие записи">
+          <button class="on" data-kind="все">Все</button>
+          <button data-kind="встреча">Встречи</button>
+          <button data-kind="мок-собес">Тренировки</button>
+        </div>
+      </div>
+      <div id="arList" class="ar-list"></div>
+    </aside>
+
+    <div class="ar-main">
+      <div id="arEmpty" class="empty">
+        <div class="art" style="--src:url(img/line-reel.webp)"></div>
+        <h2>Выбери запись слева</h2>
+        <p>Здесь лежат расшифровки встреч и разборы тренировок. Поиск ищет по тексту внутри них.</p>
+      </div>
+
+      <article id="arView" class="ar-view" hidden>
+        <header class="ar-head">
+          <h1 id="arName"></h1>
+          <span id="arMeta"></span>
+          <div class="ar-actions">
+            <button id="arDigest" class="btn" title="Договорённости, задачи, сроки и вопросы из разговора">
+              <svg class="ic" aria-hidden="true"><use href="#i-list"/></svg>Выжимка
+            </button>
+            <button id="arCopyText" class="btn">
+              <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Копировать текст
+            </button>
+            <div class="menu-wrap">
+              <button id="arMore" class="btn icon" aria-haspopup="menu" aria-expanded="false" aria-label="Ещё действия">
+                <svg class="ic" aria-hidden="true"><use href="#i-more"/></svg>
+              </button>
+              <div id="arMenu" class="menu" role="menu" hidden>
+                <button id="arCopyPath" role="menuitem"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Копировать путь</button>
+                <button id="arOpen" role="menuitem"><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>Открыть файл</button>
+                <button id="arRename" role="menuitem"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg>Переименовать</button>
+                <hr>
+                <button id="arDelete" role="menuitem" class="danger"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg>Удалить</button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <div id="arCard" class="ar-card" hidden>
+          <h3 id="arCardTitle" class="ar-card-title" hidden></h3>
+          <div id="arFields" class="ar-fields"></div>
+          <div id="arNotes" class="ar-notes md" hidden></div>
+        </div>
+
+        <div id="arDigestBox" class="ar-digest" hidden></div>
+        <div id="arBody" class="ar-body utts"></div>
+        <div id="arTail" class="ar-tail md" hidden></div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ========================================================= настройки -->
+  <section id="screen-settings" class="screen scroll" hidden>
+    <div class="page">
+      <header class="page-head"><h1>Настройки</h1></header>
+
+      <h2 class="section-title">Распознавание речи</h2>
+      <div class="row">
+        <div class="row-label">Где распознавать<small id="stNow"></small></div>
+        <div class="row-field">
+          <div id="stMode" class="seg" role="radiogroup" aria-label="Где распознавать речь">
+            <button data-mode="local">На этом компьютере</button>
+            <button data-mode="api">Через интернет</button>
+          </div>
+          <p id="stModeNote" class="help"></p>
+        </div>
+      </div>
+
+      <div id="stLocal">
+        <div class="row">
+          <div class="row-label">Модель</div>
+          <div class="row-field">
+            <select id="stModel"></select>
+            <p id="stModelNote" class="help"></p>
+            <p id="stHardware" class="hw"></p>
+          </div>
+        </div>
+      </div>
+
+      <div id="stApi" hidden>
+        <div class="row">
+          <div class="row-label">Сервис</div>
+          <div class="row-field">
+            <select id="stProvider"></select>
+            <p id="stProviderNote" class="help"></p>
+          </div>
+        </div>
+        <div id="stUrlRow" class="row">
+          <div class="row-label"><label for="stUrl">Адрес сервера</label></div>
+          <div class="row-field">
+            <input id="stUrl" name="server" type="url" placeholder="http://localhost:8000/v1"
+                   spellcheck="false" autocomplete="off">
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-label"><label for="stApiModel">Модель</label></div>
+          <div class="row-field">
+            <input id="stApiModel" name="model" type="text" list="stApiModels" spellcheck="false" autocomplete="off">
+            <datalist id="stApiModels"></datalist>
+          </div>
+        </div>
+        <div id="stFolderRow" class="row">
+          <div class="row-label"><label for="stFolder">Каталог</label></div>
+          <div class="row-field">
+            <input id="stFolder" name="folder" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="нужен только для ключа обычного пользователя">
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-label"><label for="stKey">Ключ</label></div>
+          <div class="row-field">
+            <div class="key-row">
+              <input id="stKey" name="api-key" type="password" autocomplete="off" spellcheck="false">
+              <button id="stForget" class="btn">Забыть</button>
+            </div>
+            <p class="help">Хранится в диспетчере учётных данных Windows, а не в файле.
+              <button id="stKeysLink" class="link">Где взять ключ</button></p>
+            <p class="privacy">Звук реплик уходит на сервер. Разговоры под NDA распознавай на этом компьютере.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="row-label"><label for="stLang">Язык разговора</label></div>
+        <div class="row-field"><select id="stLang"></select></div>
+      </div>
+
+      <div class="save-row">
+        <button id="stSave" class="btn primary">Сохранить</button>
+        <button id="stTest" class="btn">Проверить связь</button>
+        <span id="stResult" aria-live="polite"></span>
+      </div>
+
+      <h2 class="section-title">Микрофон</h2>
+      <div class="row">
+        <div class="row-label"><label for="gain">Усиление</label><small id="gainValue">×1.0</small></div>
+        <div class="row-field">
+          <input id="gain" type="range" min="1" max="8" step="0.1" value="1">
+          <p class="help">Если тебя плохо слышно, подними. Меняется только внутри программы,
+            настройки Windows не трогаются. Выше ×8 вместе с голосом растёт шум.</p>
+        </div>
+      </div>
+
+      <h2 class="section-title">Файлы</h2>
+      <div class="row">
+        <div class="row-label">Где лежат</div>
+        <div class="row-field">
+          <p class="help" style="margin-bottom:12px">Расшифровки, разборы тренировок и банки вопросов лежат рядом с программой.</p>
+          <div class="actions" style="margin-top:0">
+            <button id="stOpenRecords" class="btn"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Папка с записями</button>
+            <button id="stOpenBanks" class="btn"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Папка с банками</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Свой диалог вместо prompt() и confirm(): те выглядят как чужое окно браузера -->
+<dialog id="dlg" class="dlg" aria-labelledby="dlgTitle">
+  <form method="dialog" class="dlg-body">
+    <h2 id="dlgTitle"></h2>
+    <p id="dlgText"></p>
+    <input id="dlgInput" type="text" spellcheck="false" autocomplete="off" aria-labelledby="dlgTitle" hidden>
+    <div class="dlg-actions">
+      <button value="cancel" class="btn">Отмена</button>
+      <button value="ok" id="dlgOk" class="btn primary">Готово</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="markdown.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
