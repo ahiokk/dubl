@@ -220,17 +220,21 @@ class Session:
         analyzer: SpeechAnalyzer,
         categories: list[str] | None = None,
         shuffle: bool = False,
+        only_ids: list[str] | None = None,
     ) -> None:
         self.bank = bank
         self.level = LEVELS.get(level_name, LEVELS[DEFAULT_LEVEL])
         self.analyzer = analyzer
         # Пустой список тем означает «все»: так проще и в интерфейсе, и здесь
         self.categories = list(categories) if categories else []
+        # Прогон слабых: только вопросы, которые в прошлый раз не получились
+        only = set(only_ids or [])
         self.questions = [
             q
             for q in bank.questions
             if q.level <= self.level.max_question_level
             and (not self.categories or q.category in self.categories)
+            and (not only or q.id in only)
         ]
         if shuffle:
             # Иначе с третьего прогона отвечаешь по памяти о порядке, а не по существу
@@ -402,6 +406,54 @@ class Session:
             "categories": self.categories,
         }
 
+    def summary(self) -> dict:
+        """Итог для последнего экрана: по каждому пройденному вопросу последний дубль.
+
+        Слабым считается вопрос, где последний дубль не чистый: не прозвучал тезис,
+        перебор слов-паразитов или время мимо цели. Их можно прогнать ещё раз.
+        """
+        rows = []
+        for i, q in enumerate(self.questions):
+            if i > self.index:
+                break
+            tries = self.attempts.get(q.id, [])
+            target, limit = self.limits(q)
+            row = {
+                "id": q.id,
+                "text": q.text,
+                "category": q.category,
+                "takes": len(tries),
+                "target": [round(target[0]), round(target[1])] if target else None,
+                "fillers_limit": limit,
+            }
+            if not tries:
+                if i == self.index:
+                    break  # до этого вопроса дошли, но не ответили и не пропустили
+                rows.append({**row, "skipped": True})
+                continue
+            last = tries[-1]
+            duration = last.metrics.duration_sec
+            time_ok = not target or target[0] <= duration <= target[1]
+            fillers_ok = limit is None or last.metrics.fillers_total <= limit
+            rows.append({
+                **row,
+                "skipped": False,
+                "duration": round(duration),
+                "fillers": last.metrics.fillers_total,
+                "covered": sum(last.covered),
+                "total": len(last.covered),
+                "followups": len(last.followups),
+                "clean": time_ok and fillers_ok and all(last.covered),
+            })
+        answered = [r for r in rows if not r["skipped"]]
+        return {
+            "rows": rows,
+            "answered": len(answered),
+            "takes": sum(r["takes"] for r in rows),
+            "clean": sum(1 for r in answered if r["clean"]),
+            "weak_ids": [r["id"] for r in answered if not r["clean"]],
+        }
+
     def prompt_for_review(self) -> str:
         """Готовый текст запроса к ИИ-агенту вместе с разбором.
 
@@ -429,6 +481,12 @@ class Session:
         safe = "".join(c for c in self.bank.name if c.isalnum() or c in " -_")
         safe = " ".join(safe.split())  # убираем двойные пробелы от выкинутых символов
         path = SESSIONS_DIR / f"{stamp} {safe}.md"
+        # Прогон слабых часто укладывается в ту же минуту, что и прошлая
+        # тренировка: без номера он затёр бы её разбор
+        n = 2
+        while path.exists():
+            path = SESSIONS_DIR / f"{stamp} {safe} ({n}).md"
+            n += 1
         path.write_text(self._markdown(), encoding="utf-8")
         path.with_suffix(".json").write_text(
             json.dumps(self._json(), ensure_ascii=False, indent=1), encoding="utf-8"

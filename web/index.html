@@ -24,6 +24,9 @@
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
   <symbol id="i-headphones" viewBox="0 0 24 24"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/></symbol>
   <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
 </svg>
 
 <header class="bar">
@@ -33,9 +36,10 @@
   </div>
 
   <nav class="modes" aria-label="Разделы">
-    <button class="mode" data-screen="meeting" aria-current="page">Запись</button>
-    <button class="mode" data-screen="interview">Тренажёр</button>
-    <button class="mode" data-screen="archive">Архив</button>
+    <button class="mode" data-screen="meeting" aria-current="page" title="Запись, Ctrl+1">Запись</button>
+    <button class="mode" data-screen="interview" title="Тренажёр, Ctrl+2">Тренажёр</button>
+    <button class="mode" data-screen="archive" title="Архив, Ctrl+3">Архив</button>
+    <span id="modeMark" class="mode-mark" aria-hidden="true"></span>
   </nav>
 
   <div class="bar-end">
@@ -43,7 +47,7 @@
       <span class="lamp"></span><span id="navLiveText">Запись</span>
     </button>
     <button id="asrOpen" class="asr-chip" title="Чем распознаётся речь. Поменять можно в настройках">…</button>
-    <button class="icon-btn" data-screen="settings" aria-label="Настройки" title="Настройки">
+    <button class="icon-btn" data-screen="settings" aria-label="Настройки" title="Настройки, Ctrl+,">
       <svg class="ic" aria-hidden="true"><use href="#i-sliders"/></svg>
     </button>
   </div>
@@ -73,18 +77,52 @@
       </div>
     </div>
 
-    <div class="tracks">
+    <div id="tracks" class="tracks" data-tone="check">
       <div class="track me">
         <div class="track-head">
           <span class="track-name">Я</span>
-          <select id="mic" aria-label="Мой микрофон" title="Микрофон"></select>
+          <div class="dev">
+            <button id="micBtn" class="dev-btn" aria-haspopup="listbox" aria-expanded="false"
+                    aria-label="Мой микрофон">
+              <span class="dev-name">…</span>
+              <svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg>
+            </button>
+            <div id="micMenu" class="menu dev-menu" role="listbox" aria-label="Мой микрофон" hidden></div>
+          </div>
+          <div class="gain">
+            <button id="gainMeBtn" class="gain-btn" aria-haspopup="dialog" aria-expanded="false"
+                    title="Усиление моего микрофона">×1.0</button>
+            <div id="gainMePop" class="menu gain-pop" role="dialog" aria-label="Усиление моего микрофона" hidden>
+              <label for="gainMeRange">Усиление микрофона<b id="gainMePopValue">×1.0</b></label>
+              <input id="gainMeRange" type="range" min="1" max="8" step="0.1" value="1">
+              <p class="help">Реплики пропадают, поднимай. Дорожка упирается в потолок, убавь.</p>
+            </div>
+          </div>
+          <select id="mic" hidden aria-hidden="true" tabindex="-1"></select>
         </div>
         <canvas id="waveMe" class="wave" aria-label="Громкость моего микрофона"></canvas>
       </div>
       <div class="track them">
         <div class="track-head">
           <span class="track-name">Собеседник</span>
-          <select id="spk" aria-label="Откуда брать звук собеседника" title="Звук в наушниках"></select>
+          <div class="dev">
+            <button id="spkBtn" class="dev-btn" aria-haspopup="listbox" aria-expanded="false"
+                    aria-label="Откуда брать звук собеседника">
+              <span class="dev-name">…</span>
+              <svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg>
+            </button>
+            <div id="spkMenu" class="menu dev-menu" role="listbox" aria-label="Звук собеседника" hidden></div>
+          </div>
+          <div class="gain">
+            <button id="gainThemBtn" class="gain-btn" aria-haspopup="dialog" aria-expanded="false"
+                    title="Усиление звука собеседника">×1.0</button>
+            <div id="gainThemPop" class="menu gain-pop" role="dialog" aria-label="Усиление звука собеседника" hidden>
+              <label for="gainThemRange">Усиление собеседника<b id="gainThemPopValue">×1.0</b></label>
+              <input id="gainThemRange" type="range" min="1" max="12" step="0.1" value="1">
+              <p class="help">Реплики пропадают, поднимай. Дорожка упирается в потолок, убавь.</p>
+            </div>
+          </div>
+          <select id="spk" hidden aria-hidden="true" tabindex="-1"></select>
         </div>
         <canvas id="waveThem" class="wave" aria-label="Громкость собеседника"></canvas>
       </div>
@@ -93,15 +131,31 @@
     <div class="sheet">
       <div id="scroll" class="feed">
         <div id="intro" class="intro">
-          <h1>Запись встречи</h1>
-          <p>Две дорожки: сверху твой микрофон, снизу звук в наушниках. Разговор пойдёт
-            стенограммой сюда и сразу в файл, путь к нему можно отдать ИИ-агенту прямо
-            во время созвона.</p>
+          <h1>Саундчек</h1>
+          <p class="lead">Скажи пару слов и включи любой звук в наушниках. Когда обе дорожки
+            отзовутся, можно писать. Запись начинается кнопкой или пробелом.</p>
+          <ul class="ready" aria-live="polite">
+            <li id="ckMe" class="me" data-state="wait">
+              <span class="ck"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span>
+              <b>Микрофон</b><span class="ck-text">скажи что-нибудь</span>
+            </li>
+            <li id="ckThem" class="them" data-state="wait">
+              <span class="ck"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span>
+              <b>Звук в наушниках</b><span class="ck-text">включи видео или музыку</span>
+            </li>
+            <li id="ckAsr" class="asr" data-state="ok">
+              <span class="ck"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span>
+              <b>Распознавание</b><span class="ck-text"><span id="ckAsrText">…</span>
+                <button id="ckAsrEdit" class="link">поменять</button></span>
+            </li>
+          </ul>
           <p class="hint">
             <svg class="ic" aria-hidden="true"><use href="#i-headphones"/></svg>
             Сиди в наушниках. Из колонок микрофон услышит собеседника, и реплики перепутаются.
           </p>
         </div>
+        <p id="waitFirst" class="wait-first" hidden>Первая реплика появится здесь через пару секунд
+          после того, как кто-то договорит фразу.</p>
         <div id="lines" class="utts"></div>
       </div>
       <button id="toBottom" class="btn to-bottom" hidden>
@@ -268,22 +322,35 @@
       </details>
 
       <div class="actions">
-        <button id="ivRetry" class="btn">Ещё дубль</button>
+        <button id="ivRetry" class="btn">Ещё дубль <kbd>R</kbd></button>
         <button id="ivNext" class="btn">Следующий вопрос</button>
         <button id="ivFinish2" class="btn quiet end">Завершить тренировку</button>
       </div>
     </div>
 
     <!-- конец -->
-    <div id="ivDone" class="page narrow done" hidden>
+    <div id="ivDone" class="page done" hidden>
       <h1 id="ivDoneTitle">Тренировка закончена</h1>
       <p id="ivDoneText"></p>
+
+      <div id="ivSummary" class="summary" hidden>
+        <div class="sum-head" aria-hidden="true">
+          <span></span><span>Вопрос</span><span>Время и цель</span><span></span><span>Тезисы</span><span>Паразиты</span>
+        </div>
+        <div id="ivSumRows"></div>
+      </div>
+
       <div id="ivReview" class="review">
-        <button id="ivCopyPrompt" class="btn primary big">
-          <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Скопировать запрос для нейросети
-        </button>
-        <p class="help">Вставь его в любой чат с нейросетью. Она разберёт ответы по смыслу:
-          что звучит слабо и что стоит добавить.</p>
+        <div class="btns">
+          <button id="ivWeak" class="btn primary big">
+            <svg class="ic" aria-hidden="true"><use href="#i-redo"/></svg><span id="ivWeakText">Прогнать слабые ещё раз</span>
+          </button>
+          <button id="ivCopyPrompt" class="btn big">
+            <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Скопировать запрос для нейросети
+          </button>
+        </div>
+        <p class="help">Запрос вставь в любой чат с нейросетью. Она разберёт ответы по смыслу
+          и подскажет, что звучит слабо и что стоит добавить.</p>
       </div>
       <div class="actions">
         <button id="ivAgain" class="btn">Новая тренировка</button>
@@ -321,6 +388,15 @@
         <header class="ar-head">
           <h1 id="arName"></h1>
           <span id="arMeta"></span>
+          <div id="arFind" class="find" hidden>
+            <span id="arFindText" aria-live="polite"></span>
+            <button id="arFindPrev" class="btn icon" title="Предыдущее совпадение, Shift+Enter" aria-label="Предыдущее совпадение">
+              <svg class="ic" aria-hidden="true"><use href="#i-up"/></svg>
+            </button>
+            <button id="arFindNext" class="btn icon" title="Следующее совпадение, Enter" aria-label="Следующее совпадение">
+              <svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg>
+            </button>
+          </div>
           <div class="ar-actions">
             <button id="arDigest" class="btn" title="Договорённости, задачи, сроки и вопросы из разговора">
               <svg class="ic" aria-hidden="true"><use href="#i-list"/></svg>Выжимка
@@ -359,7 +435,15 @@
   <!-- ========================================================= настройки -->
   <section id="screen-settings" class="screen scroll" hidden>
     <div class="page">
-      <header class="page-head"><h1>Настройки</h1></header>
+      <header class="page-head">
+        <div>
+          <h1>Настройки</h1>
+          <p>Всё сохраняется сразу, как только поменяешь.</p>
+        </div>
+        <span id="stSaved" class="saved" role="status" aria-live="polite" hidden>
+          <svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>Сохранено
+        </span>
+      </header>
 
       <h2 class="section-title">Распознавание речи</h2>
       <div class="row">
@@ -433,18 +517,26 @@
       </div>
 
       <div class="save-row">
-        <button id="stSave" class="btn primary">Сохранить</button>
         <button id="stTest" class="btn">Проверить связь</button>
         <span id="stResult" aria-live="polite"></span>
       </div>
 
-      <h2 class="section-title">Микрофон</h2>
+      <h2 class="section-title">Громкость</h2>
       <div class="row">
-        <div class="row-label"><label for="gain">Усиление</label><small id="gainValue">×1.0</small></div>
+        <div class="row-label"><label for="gain">Мой микрофон</label><small id="gainValue">×1.0</small></div>
         <div class="row-field">
           <input id="gain" type="range" min="1" max="8" step="0.1" value="1">
           <p class="help">Если тебя плохо слышно, подними. Меняется только внутри программы,
             настройки Windows не трогаются. Выше ×8 вместе с голосом растёт шум.</p>
+        </div>
+      </div>
+      <div class="row">
+        <div class="row-label"><label for="gainThem">Звук собеседника</label><small id="gainThemValue">×1.0</small></div>
+        <div class="row-field">
+          <input id="gainThem" type="range" min="1" max="12" step="0.1" value="1">
+          <p class="help">Если собеседника слышно тихо и его реплики пропадают, подними. Звук из
+            компьютера чистый, без шума комнаты, поэтому его можно тянуть до ×12. То же самое
+            есть кнопкой «×» в шапке синей дорожки, там уровень видно сразу.</p>
         </div>
       </div>
 

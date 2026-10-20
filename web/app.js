@@ -103,6 +103,41 @@ function store(key, value) {
 
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
+// =============================================================== движение
+
+// «Уменьшить анимацию» в Windows: переходы и пробег цвета по дорожкам выключаются
+const calm = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+/**
+ * Смена состояния с переходом браузера: старое и новое состояние
+ * плавно сменяют друг друга. kind выбирает рисунок перехода в style.css.
+ */
+function vt(update, kind = '') {
+  // В свёрнутом окне браузер переход всё равно пропустит
+  if (calm.matches || !document.startViewTransition || document.visibilityState !== 'visible') {
+    update();
+    return;
+  }
+  const root = document.documentElement;
+  root.dataset.vt = kind;
+  const t = document.startViewTransition(update);
+  // Пропущенный переход отклоняет ready. Состояние при этом уже новое, ошибки нет
+  t.ready.catch(() => {});
+  t.finished.finally(() => {
+    if (root.dataset.vt === kind) delete root.dataset.vt;
+  });
+}
+
+/** Проигрывает CSS-анимацию появления ещё раз: класс снимается и ставится заново. */
+function replay(el, cls = 'enter') {
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+}
+
+/** Что-то печатают: горячие клавиши тогда молчат. */
+const typing = () => ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName);
+
 // =============================================================== дорожки
 
 // Питон присылает громкость каждого источника, окно раз в 100 мс кладёт её
@@ -130,23 +165,44 @@ function bar(ctx, x, mid, width, height) {
   ctx.fill();
 }
 
-/** Живая дорожка: свежие столбики справа, старые уходят влево. */
-function drawLive(canvas, samples) {
+/**
+ * Живая дорожка: свежие столбики справа, старые уходят влево.
+ *
+ * tone решает цвет. До записи дорожки серые: это саундчек, ничего не пишется.
+ * upTo это доля ширины слева, уже залитая цветом дорожки: на старте записи
+ * она бежит от 0 до 1. alpha гасит цвет обратно в серый после остановки.
+ */
+function drawLive(canvas, samples, tone = { upTo: 1, alpha: 1 }) {
   const { ctx, w, h, dpr } = fitCanvas(canvas);
   ctx.clearRect(0, 0, w, h);
   const mid = h / 2;
   ctx.fillStyle = cssVar('--line-strong');
   ctx.fillRect(0, Math.round(mid - dpr / 2), w, dpr);
 
-  ctx.fillStyle = getComputedStyle(canvas).color;
+  const color = getComputedStyle(canvas).color;
+  const muted = cssVar('--ink-2');
+  const edge = 80 * dpr;  // мягкий край у бегущей заливки
   const step = 5 * dpr;
   const width = 3 * dpr;
   const fit = Math.floor(w / step);
   for (let i = Math.max(0, samples.length - fit); i < samples.length; i++) {
     const v = norm(samples[i]);
     if (v < SILENCE) continue;
-    bar(ctx, w - (samples.length - i) * step, mid, width, Math.max(2 * dpr, v * (h - 4 * dpr)));
+    const x = w - (samples.length - i) * step;
+    const height = Math.max(2 * dpr, v * (h - 4 * dpr));
+    const lit = Math.min(1, Math.max(0, (tone.upTo * (w + edge) - x) / edge)) * tone.alpha;
+    if (lit < 1) {
+      ctx.globalAlpha = 0.42 * (1 - lit);
+      ctx.fillStyle = muted;
+      bar(ctx, x, mid, width, height);
+    }
+    if (lit > 0) {
+      ctx.globalAlpha = lit;
+      ctx.fillStyle = color;
+      bar(ctx, x, mid, width, height);
+    }
   }
+  ctx.globalAlpha = 1;
 }
 
 /**
@@ -233,25 +289,41 @@ function ask({ title, text = '', input = null, ok = 'Готово', danger = fal
 
 let screen = 'meeting';
 
+// Порядок разделов: переход едет вправо, если идёшь дальше по списку, и влево, если назад
+const SCREENS = ['meeting', 'interview', 'archive', 'settings'];
+
 function show(name) {
   if (name === screen) return;
   if (ivAnswering) { toast('Сначала закончи ответ'); return; }
   // Тренажёру нужен тот же микрофон, что пишет встречу
   if (name === 'interview' && recording) { toast('Сначала останови запись встречи'); return; }
+  const forward = SCREENS.indexOf(name) > SCREENS.indexOf(screen);
   screen = name;
-  for (const b of document.querySelectorAll('[data-screen]')) {
-    if (b.dataset.screen === name) b.setAttribute('aria-current', 'page');
-    else b.removeAttribute('aria-current');
-  }
-  for (const s of ['meeting', 'interview', 'archive', 'settings']) {
-    $('screen-' + s).hidden = s !== name;
-  }
   closeMenu();
-  paintNavLive();
-  if (name === 'meeting') redrawIdleTracks();
+  vt(() => {
+    for (const b of document.querySelectorAll('[data-screen]')) {
+      if (b.dataset.screen === name) b.setAttribute('aria-current', 'page');
+      else b.removeAttribute('aria-current');
+    }
+    for (const s of SCREENS) $('screen-' + s).hidden = s !== name;
+    paintNavLive();
+    if (name === 'meeting') redrawIdleTracks();
+  }, forward ? 'next' : 'back');
+  paintModeMark();
+  syncMonitor();
   if (name === 'interview' && !iv.setup.hidden) ivLoadSetup();
   if (name === 'archive') arLoad(ar.search.value);
   if (name === 'settings') stLoad();
+}
+
+/** Черта под вкладкой переезжает к выбранной, а не появляется рывком. */
+function paintModeMark() {
+  const mark = $('modeMark');
+  const tab = document.querySelector(`.mode[data-screen="${screen}"]`);
+  mark.classList.toggle('off', !tab);
+  if (!tab) return;
+  mark.style.width = `${tab.offsetWidth - 24}px`;
+  mark.style.transform = `translateX(${tab.offsetLeft + 12}px)`;
 }
 
 document.querySelectorAll('[data-screen]').forEach((b) => {
@@ -259,7 +331,20 @@ document.querySelectorAll('[data-screen]').forEach((b) => {
 });
 
 $('asrOpen').addEventListener('click', () => show('settings'));
+$('ckAsrEdit').addEventListener('click', () => show('settings'));
 $('navLive').addEventListener('click', () => show('meeting'));
+
+// Ctrl+1, 2, 3 и Ctrl+запятая: разделы. Ctrl+F в архиве: поиск
+document.addEventListener('keydown', (e) => {
+  if (!e.ctrlKey || e.shiftKey || e.altKey || $('dlg').open) return;
+  const to = { Digit1: 'meeting', Digit2: 'interview', Digit3: 'archive', Comma: 'settings' }[e.code];
+  if (to) { e.preventDefault(); show(to); return; }
+  if (e.code === 'KeyF' && screen === 'archive') {
+    e.preventDefault();
+    ar.search.focus();
+    ar.search.select();
+  }
+});
 
 // Огонёк «идёт запись» нужен, только когда смотришь другой раздел
 function paintNavLive() {
@@ -268,6 +353,7 @@ function paintNavLive() {
 
 function paintAsrLabel(label) {
   $('asrOpen').textContent = label || '…';
+  $('ckAsrText').textContent = label || '…';
 }
 
 // ========================================================= запись встречи
@@ -275,6 +361,8 @@ function paintAsrLabel(label) {
 const mt = {
   screen: $('screen-meeting'),
   mic: $('mic'), spk: $('spk'),
+  micBtn: $('micBtn'), spkBtn: $('spkBtn'), micMenu: $('micMenu'), spkMenu: $('spkMenu'),
+  tracks: $('tracks'),
   record: $('record'), recDot: $('recDot'), recLabel: $('recLabel'), clock: $('clock'),
   state: $('state'), stateText: $('stateText'), stateSub: $('stateSub'),
   fileActions: $('fileActions'),
@@ -293,6 +381,25 @@ let liveStart = 0;
 let liveMe = [];
 let liveThem = [];
 
+// Тон дорожек записи, смысл полей описан у drawLive
+const tone = { upTo: 0, alpha: 1 };
+let toneFrame = 0;
+
+/** Плавно меняет одно поле тона и перерисовывает дорожки каждый кадр. */
+function animateTone(key, from, to, ms) {
+  cancelAnimationFrame(toneFrame);
+  tone[key] = from;
+  if (calm.matches) { tone[key] = to; redrawIdleTracks(); return; }
+  const t0 = performance.now();
+  const frame = (now) => {
+    const k = Math.min(1, (now - t0) / ms);
+    tone[key] = from + (to - from) * (1 - (1 - k) ** 3);
+    redrawIdleTracks();
+    if (k < 1) toneFrame = requestAnimationFrame(frame);
+  };
+  toneFrame = requestAnimationFrame(frame);
+}
+
 function setPhase(p) {
   phase = p;
   mt.screen.dataset.state = p;
@@ -309,7 +416,133 @@ function setPhase(p) {
   const lock = live || p === 'starting' || p === 'stopping';
   mt.mic.disabled = lock || !hasDevices(mt.mic);
   mt.spk.disabled = lock || !hasDevices(mt.spk);
+  paintDeviceButtons();
   $('asrOpen').disabled = lock;
+  mt.tracks.dataset.tone = p === 'idle' || p === 'starting' ? 'check' : 'live';
+  syncMonitor();
+}
+
+// --- саундчек: до записи дорожки живые, но серые, и ничего не пишется ---
+
+let monitorOn = false;
+let monitorQueue = Promise.resolve();
+const heard = { me: false, them: false };
+
+// Порог «слышно»: речь в гарнитуре даёт около 0.1, любой звук в наушниках
+// заметно выше нуля. Ниже этого VAD речью ничего не признает
+const HEARD_ME = 0.04;
+const HEARD_THEM = 0.01;
+
+function monitorWanted() {
+  return screen === 'meeting' && phase === 'idle' && document.visibilityState === 'visible'
+    && (hasDevices(mt.mic) || hasDevices(mt.spk));
+}
+
+/**
+ * Открывает или закрывает саундчек под текущее состояние окна.
+ * Вызовы выстраиваются в очередь: питон должен получать их по порядку,
+ * иначе саундчек может открыться поверх только что начатой записи.
+ */
+function syncMonitor(restart = false) {
+  monitorQueue = monitorQueue.then(async () => {
+    if (!window.pywebview) return;
+    const want = monitorWanted();
+    if (want && (!monitorOn || restart)) {
+      const r = await api().monitor_start(
+        hasDevices(mt.mic) ? Number(mt.mic.value) : -1, hasDevices(mt.spk) ? Number(mt.spk.value) : -1,
+        deviceName(mt.mic), deviceName(mt.spk),
+      );
+      monitorOn = !(r && r.error);
+      if (r && r.error) paintHeard(r.error);
+    } else if (!want && monitorOn) {
+      monitorOn = false;
+      await api().monitor_stop();
+      lastLevels = [0, 0];
+    }
+  }).catch(() => { monitorOn = false; });
+  return monitorQueue;
+}
+
+document.addEventListener('visibilitychange', () => syncMonitor());
+
+/** Строки готовности под дорожками: слышно ли меня и собеседника. */
+function paintHeard(error) {
+  const rows = [
+    ['ckMe', heard.me, hasDevices(mt.mic), 'скажи что-нибудь', 'микрофон не найден'],
+    ['ckThem', heard.them, hasDevices(mt.spk), 'включи видео или музыку', 'наушники не найдены, подключи их'],
+  ];
+  for (const [id, ok, has, wait, none] of rows) {
+    const li = $(id);
+    const state = error ? 'bad' : !has ? 'bad' : ok ? 'ok' : 'wait';
+    if (li.dataset.state !== state) li.dataset.state = state;
+    li.querySelector('.ck-text').textContent = error || (!has ? none : ok ? 'слышно' : wait);
+  }
+}
+
+function resetHeard(which) {
+  if (which !== 'them') heard.me = false;
+  if (which !== 'me') heard.them = false;
+  paintHeard();
+}
+
+// --- кнопки устройств: своё меню вместо системного списка ---
+
+function paintDeviceButtons() {
+  for (const [select, btn, role] of [[mt.mic, mt.micBtn, 'Мой микрофон'], [mt.spk, mt.spkBtn, 'Звук собеседника']]) {
+    const opt = select.selectedOptions[0];
+    const name = hasDevices(select) && opt ? opt.textContent : 'не найдено';
+    btn.querySelector('.dev-name').textContent = name;
+    // Подпись для экранного диктора: и чья дорожка, и что выбрано
+    btn.setAttribute('aria-label', `${role}: ${name}`);
+    btn.title = opt ? opt.title : '';
+    btn.disabled = select.disabled;
+  }
+}
+
+function openDeviceMenu(select, btn, menu, which) {
+  const open = menu.hidden;
+  closeMenu();
+  if (!open) return;
+  menu.innerHTML = '';
+  for (const opt of select.options) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', String(opt.selected));
+    item.innerHTML = `<span class="nm"></span>${icon('check')}`;
+    item.querySelector('.nm').textContent = opt.textContent;
+    item.title = opt.title;
+    item.addEventListener('click', () => {
+      closeMenu();
+      btn.focus();
+      if (select.value === opt.value) return;
+      select.value = opt.value;
+      store(which === 'me' ? 'micName' : 'spkName', opt.title);
+      paintDeviceButtons();
+      resetHeard(which);
+      syncMonitor(true);
+    });
+    menu.appendChild(item);
+  }
+  menu.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
+  (menu.querySelector('[aria-selected="true"]') || menu.querySelector('button'))?.focus();
+}
+
+mt.micBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openDeviceMenu(mt.mic, mt.micBtn, mt.micMenu, 'me');
+});
+mt.spkBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openDeviceMenu(mt.spk, mt.spkBtn, mt.spkMenu, 'them');
+});
+
+/** Выбирает устройство, которое человек брал в прошлый раз, если оно на месте. */
+function pickRemembered(select, key) {
+  const name = store(key);
+  const opt = name && [...select.options].find((o) => o.title === name);
+  if (opt) select.value = opt.value;
 }
 
 function paintState(text, kind, sub) {
@@ -325,8 +558,8 @@ function liveSub() {
 }
 
 function redrawIdleTracks() {
-  drawLive(mt.waveMe, liveMe);
-  drawLive(mt.waveThem, liveThem);
+  drawLive(mt.waveMe, liveMe, tone);
+  drawLive(mt.waveThem, liveThem, tone);
 }
 
 // --- прокрутка ленты ---
@@ -376,12 +609,23 @@ mt.record.addEventListener('click', async () => {
   if (phase !== 'idle' && phase !== 'done') return;
   setPhase('starting');
   paintState('Запускаю', 'loading', $('asrOpen').textContent);
+  // Саундчек должен закрыться раньше, чем откроется запись
+  await monitorQueue;
   // Имена шлём вместе с номерами: номера устройств в Windows плавают,
   // и к моменту записи выбранный номер может указывать на другой вход
   const res = await api().start(
     Number(mt.mic.value), Number(mt.spk.value), deviceName(mt.mic), deviceName(mt.spk),
   );
   if (res && res.error) ui.error(res.error);
+});
+
+// Пробел начинает и останавливает запись, пока ничего не печатаешь
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || screen !== 'meeting' || typing() || $('dlg').open) return;
+  const el = document.activeElement;
+  if (el && el !== mt.record && ['BUTTON', 'SUMMARY'].includes(el.tagName)) return;
+  e.preventDefault();
+  if (!e.repeat) mt.record.click();
 });
 
 $('copyPath').addEventListener('click', () => {
@@ -438,19 +682,25 @@ const ui = {
 
   started(path) {
     recording = true;
+    monitorOn = false;  // питон закрыл саундчек сам, перед тем как открыть запись
     currentPath = path;
     lineCount = 0;
     gapCount = 0;
     lastSpeaker = null;
     stickToBottom = true;
-    liveMe = [];
-    liveThem = [];
-    mt.lines.innerHTML = '';
-    mt.intro.hidden = true;
+    // Дорожки не обнуляем: столбики саундчека остаются и загораются цветом
+    // слева направо, как пульт, который встал на запись
     liveStart = Date.now();
     mt.clock.textContent = '0:00';
-    setPhase('live');
-    paintState('Идёт запись', 'live', liveSub());
+    vt(() => {
+      mt.lines.innerHTML = '';
+      mt.intro.hidden = true;
+      $('waitFirst').hidden = false;
+      setPhase('live');
+      paintState('Идёт запись', 'live', liveSub());
+    }, 'rec');
+    tone.alpha = 1;
+    animateTone('upTo', 0, 1, 900);
     document.body.classList.add('recording');
     paintNavLive();
     paintToBottom();
@@ -458,15 +708,20 @@ const ui = {
 
   stopped(report) {
     recording = false;
+    $('waitFirst').hidden = true;
     document.body.classList.remove('recording');
     lastLevels = [0, 0];
     setPhase('done');
     paintNavLive();
+    // Цвет гаснет: дорожки снова серые, запись на них больше не идёт
+    tone.upTo = 1;
+    animateTone('alpha', 1, 0, 700);
     if (report) showReport(report);
   },
 
   addLine({ t, speaker, text, who, gap }) {
     lineCount += 1;
+    $('waitFirst').hidden = true;
     if (gap) gapCount += 1;
     mt.lines.appendChild(makeUtt({ who, speaker, time: shortTime(hhmmss(t)), text, gap, prev: lastSpeaker }));
     lastSpeaker = who;
@@ -512,14 +767,20 @@ window.ui = ui;
 
 // Один такт на всё окно: часы, дорожки записи, проверка микрофона, дубль
 setInterval(() => {
-  if (recording) {
+  if (recording || monitorOn) {
     liveMe.push(lastLevels[0]);
     liveThem.push(lastLevels[1]);
     if (liveMe.length > 3000) { liveMe = liveMe.slice(-2000); liveThem = liveThem.slice(-2000); }
-    if (screen === 'meeting') {
-      drawLive(mt.waveMe, liveMe);
-      drawLive(mt.waveThem, liveThem);
-    }
+    if (screen === 'meeting') redrawIdleTracks();
+  }
+  if (monitorOn && !recording) {
+    const me = lastLevels[0] > HEARD_ME && !heard.me;
+    const them = lastLevels[1] > HEARD_THEM && !heard.them;
+    if (me) heard.me = true;
+    if (them) heard.them = true;
+    if (me || them) paintHeard();
+  }
+  if (recording) {
     const passed = (Date.now() - liveStart) / 1000;
     mt.clock.textContent = clockText(passed);
     $('navLiveText').textContent = clockText(passed);
@@ -846,7 +1107,7 @@ iv.start.addEventListener('click', async () => {
   ivBusy = false;
   iv.start.disabled = false;
   if (r.error) { toast(r.error, 5000); return; }
-  ivRenderQuestion(r);
+  vt(() => ivRenderQuestion(r), 'question');
 });
 
 function ivPaintPips(p) {
@@ -941,27 +1202,45 @@ async function ivToggleAnswer() {
   iv.answerLabel.textContent = 'Расшифровываю…';
   iv.hint.textContent = '';
   iv.skip.disabled = iv.finish.disabled = false;
+  // Пока идёт расшифровка, по дорожке бежит блик: программа работает, а не зависла
+  const timeline = iv.waveTake.parentElement;
+  timeline.classList.add('busy');
 
   const r = await api().answer_stop();
+  timeline.classList.remove('busy');
   ivBusy = false;
   iv.answer.disabled = false;
   const wasFollowup = !!ivPendingFollowup;
   ivPendingFollowup = '';
-  ivNewTake();
-  if (r.error) { toast(r.error, 5000); ivDrawTake(); return; }
-  if (r.empty) { ivRenderEmpty(r); return; }
-  ivRenderResult(r, wasFollowup);
+  if (r.error) { ivNewTake(); toast(r.error, 5000); ivDrawTake(); return; }
+  // Дорожка дубля переезжает в разбор, а не пропадает вместе с экраном
+  vt(() => {
+    ivNewTake();
+    if (r.empty) ivRenderEmpty(r);
+    else ivRenderResult(r, wasFollowup);
+  }, 'review');
 }
 
 iv.answer.addEventListener('click', ivToggleAnswer);
 
 // Пробелом удобнее, чем целиться мышкой, пока говоришь
 document.addEventListener('keydown', (e) => {
-  if (e.code !== 'Space' || screen !== 'interview' || iv.ask.hidden) return;
+  if (e.code !== 'Space' || screen !== 'interview' || iv.ask.hidden || $('dlg').open) return;
   const tag = document.activeElement?.tagName;
   if (['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'SUMMARY'].includes(tag)) return;
   e.preventDefault();
-  ivToggleAnswer();
+  if (!e.repeat) ivToggleAnswer();
+});
+
+// В разборе Enter жмёт главную кнопку, R даёт ещё дубль
+document.addEventListener('keydown', (e) => {
+  if (screen !== 'interview' || iv.result.hidden || typing() || $('dlg').open || e.repeat) return;
+  if (e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.key === 'Enter' && document.activeElement?.tagName !== 'BUTTON') {
+    const main = iv.result.querySelector('.btn.primary:not([hidden])');
+    if (main && !main.closest('[hidden]')) { e.preventDefault(); main.click(); }
+  }
+  if (e.code === 'KeyR' && !iv.retry.hidden) { e.preventDefault(); iv.retry.click(); }
 });
 
 /** Дубль-уточнение: тот же экран, другой вопрос, без окна цели. */
@@ -1006,11 +1285,13 @@ function ivMeasure(label, value, note, good) {
   return m;
 }
 
-/** Главная кнопка одна, остальные обычные. */
+/** Главная кнопка одна, остальные обычные. На главной подсказка: её жмёт Enter. */
 function ivPrimary(button) {
   for (const b of [iv.retry, iv.next, $('ivFollowupAnswer')]) {
     b.className = 'btn' + (b === button ? ' primary' : '');
+    b.querySelector('.kbd-enter')?.remove();
   }
+  button.insertAdjacentHTML('beforeend', '<kbd class="kbd-enter">Enter</kbd>');
 }
 
 function ivShowResultTake() {
@@ -1050,6 +1331,8 @@ function ivRenderResult(r, wasFollowup) {
     v.covered.forEach((ok, i) => {
       const line = document.createElement('div');
       line.className = 'thesis ' + (ok ? 'ok' : 'no');
+      // Номер нужен, чтобы тезисы отмечались по очереди, а не все разом
+      line.style.setProperty('--i', i);
       line.innerHTML = `<span class="mark" aria-label="${ok ? 'прозвучало' : 'не прозвучало'}">`
         + `${icon(ok ? 'check' : 'x')}</span><span></span>`;
       line.lastElementChild.textContent = ivTheses[i] || '';
@@ -1072,7 +1355,9 @@ function ivRenderResult(r, wasFollowup) {
   iv.followup.hidden = !v.followup;
   if (v.followup) {
     $('ivFollowupText').textContent = v.followup;
-    $('ivFollowupAnswer').onclick = () => ivAskFollowup(v.followup);
+    $('ivFollowupAnswer').onclick = () => vt(() => ivAskFollowup(v.followup), 'question');
+    // Уточняющий вопрос выезжает после того, как отметились все тезисы
+    iv.followup.style.setProperty('--i', (v.covered || []).length);
   }
 
   iv.text.textContent = r.text;
@@ -1101,27 +1386,114 @@ function ivRenderEmpty(r) {
   ivShowResultTake();
 }
 
+/**
+ * Время ответа на шкале с окном цели. Длина полосы ровно равна секундам
+ * на той же шкале, что и серое окно, поэтому видно, попал ли ответ в цель.
+ */
+function ivTimeBar(row) {
+  const t = row.target;
+  const d = row.duration;
+  const max = Math.max(t ? t[1] * 1.4 : 0, d * 1.1, 10);
+  const pct = (x) => `${(x / max) * 100}%`;
+  const box = document.createElement('span');
+  box.className = 'tbar';
+  box.title = t ? `${d} с при цели ${t[0]}–${t[1]} с` : `${d} с, без цели`;
+  if (t) {
+    const win = document.createElement('i');
+    win.style.left = pct(t[0]);
+    win.style.width = pct(t[1] - t[0]);
+    box.appendChild(win);
+  }
+  const fill = document.createElement('b');
+  fill.style.width = pct(d);
+  fill.className = !t ? '' : d > t[1] ? 'over' : d < t[0] ? 'short' : 'ok';
+  box.appendChild(fill);
+  return box;
+}
+
+function ivSummaryRow(row, i) {
+  const line = document.createElement('div');
+  line.className = 'sum-row' + (row.skipped ? ' skipped' : row.clean ? ' clean' : ' weak');
+  line.style.setProperty('--i', i);
+  const mark = row.skipped ? '' : icon(row.clean ? 'check' : 'alert');
+  line.innerHTML = `<span class="mark">${mark}</span><span class="q"><b></b><small></small></span>`;
+  line.querySelector('b').textContent = row.text;
+  line.querySelector('b').title = row.text;
+  const takes = row.takes > 1 ? `, ${count(row.takes, 'дубль', 'дубля', 'дублей')}` : '';
+  line.querySelector('small').textContent = row.category + takes;
+  if (row.skipped) {
+    const s = document.createElement('span');
+    s.className = 'skip-note';
+    s.textContent = 'пропущен';
+    line.appendChild(s);
+    return line;
+  }
+  line.appendChild(ivTimeBar(row));
+  const cells = [
+    [`${row.duration} с`, row.target && (row.duration < row.target[0] || row.duration > row.target[1])],
+    [`${row.covered} из ${row.total}`, row.covered < row.total],
+    [String(row.fillers), row.fillers_limit !== null && row.fillers > row.fillers_limit],
+  ];
+  for (const [text, bad] of cells) {
+    const c = document.createElement('span');
+    c.className = 'num' + (bad ? ' bad' : '');
+    c.textContent = text;
+    line.appendChild(c);
+  }
+  return line;
+}
+
+let ivWeakIds = [];
+
 async function ivFinish() {
   const r = await api().interview_finish();
   if (r.error) { toast(r.error); return; }
   ivPrompt = r.prompt || '';
   ivPath = r.path || '';
   const saved = !!r.path;
-  $('ivDoneTitle').textContent = saved ? 'Тренировка закончена' : 'Записывать было нечего';
-  $('ivDoneText').textContent = saved
-    ? 'Время, слова-паразиты и тезисы по каждому ответу сохранены в файл.'
-    : 'Ни один ответ не записался. Если ты отвечал вслух, микрофон не пишет. '
-      + 'Проверь, что выбран нужный вход и что он включён в настройках звука Windows.';
-  $('ivReview').hidden = !saved;
-  $('ivCopyPath').hidden = !saved;
-  ivShow(iv.done);
+  const sum = r.summary || { rows: [], answered: 0, takes: 0, clean: 0, weak_ids: [] };
+  ivWeakIds = sum.weak_ids || [];
+
+  vt(() => {
+    $('ivDoneTitle').textContent = !saved ? 'Записывать было нечего'
+      : ivWeakIds.length ? 'Тренировка закончена' : 'Все ответы чистые';
+    $('ivDoneText').textContent = saved
+      ? `${count(sum.answered, 'вопрос', 'вопроса', 'вопросов')}, ${count(sum.takes, 'дубль', 'дубля', 'дублей')}. `
+        + `Чисто с последнего дубля: ${sum.clean} из ${sum.answered}.`
+      : 'Ни один ответ не записался. Если ты отвечал вслух, микрофон не пишет. '
+        + 'Проверь, что выбран нужный вход и что он включён в настройках звука Windows.';
+
+    const rows = $('ivSumRows');
+    rows.innerHTML = '';
+    sum.rows.forEach((row, i) => rows.appendChild(ivSummaryRow(row, i)));
+    $('ivSummary').hidden = !saved || !sum.rows.length;
+
+    $('ivReview').hidden = !saved;
+    $('ivCopyPath').hidden = !saved;
+    $('ivWeak').hidden = !ivWeakIds.length;
+    $('ivWeakText').textContent = `Прогнать слабые ещё раз, ${count(ivWeakIds.length, 'вопрос', 'вопроса', 'вопросов')}`;
+    $('ivCopyPrompt').className = 'btn big' + (ivWeakIds.length ? '' : ' primary');
+    ivShow(iv.done);
+  }, 'question');
 }
 
 async function ivGo(call) {
   const r = await call();
   if (r.error) { toast(r.error); return; }
-  ivRenderQuestion(r);
+  vt(() => ivRenderQuestion(r), 'question');
 }
+
+// Тот же банк и та же строгость, но только вопросы, где последний дубль не чистый
+$('ivWeak').addEventListener('click', async () => {
+  if (!ivWeakIds.length || ivBusy) return;
+  ivBusy = true;
+  const r = await api().interview_start(
+    ivBankFile, ivLevel, Number(iv.mic.value), deviceName(iv.mic), [], false, ivWeakIds,
+  );
+  ivBusy = false;
+  if (r.error) { toast(r.error, 5000); return; }
+  vt(() => ivRenderQuestion(r), 'question');
+});
 
 iv.skip.addEventListener('click', () => ivGo(() => api().interview_next()));
 iv.next.addEventListener('click', () => ivGo(() => api().interview_next()));
@@ -1140,7 +1512,7 @@ $('ivCopyPath').addEventListener('click', () => {
 
 $('ivAgain').addEventListener('click', async () => {
   await ivLoadSetup();
-  ivShow(iv.setup);
+  vt(() => ivShow(iv.setup), 'question');
 });
 
 // ================================================================= архив
@@ -1205,6 +1577,7 @@ function arRender() {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'ar-item' + (arCurrent === it.path ? ' on' : '');
+    btn.dataset.path = it.path;
     btn.innerHTML = '<span class="nm"></span><span class="sub"></span><div class="prev"></div>';
     const nm = btn.querySelector('.nm');
     nm.textContent = arTitle(it.name);
@@ -1285,8 +1658,96 @@ async function arOpen(path) {
     ar.body.appendChild(box);
   }
   ar.view.parentElement.scrollTop = 0;
+  replay(ar.view);
   arRender();
+  arHighlight(ar.search.value);
 }
+
+// --- найденное в тексте записи ---
+
+let arMarks = [];
+let arMarkAt = -1;
+
+/** «ё» и «е» в поиске одно и то же: распознавание пишет то так, то так. */
+function arPattern(query) {
+  const safe = query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return safe ? new RegExp(safe.replace(/[её]/gi, '[её]'), 'gi') : null;
+}
+
+/** Подсвечивает слово из поиска в открытой записи и встаёт на первое совпадение. */
+function arHighlight(query) {
+  for (const m of ar.view.querySelectorAll('mark')) m.replaceWith(m.textContent);
+  ar.view.normalize();
+  arMarks = [];
+  arMarkAt = -1;
+  const rx = arPattern(query);
+  $('arFind').hidden = !rx;
+  if (!rx) return;
+
+  const walker = document.createTreeWalker(ar.view, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement.closest('.ar-body, .ar-tail, .ar-digest')
+      ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    rx.lastIndex = 0;
+    if (!rx.test(node.data)) continue;
+    rx.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (const hit of node.data.matchAll(rx)) {
+      frag.append(node.data.slice(last, hit.index));
+      const mark = document.createElement('mark');
+      mark.textContent = hit[0];
+      frag.append(mark);
+      arMarks.push(mark);
+      last = hit.index + hit[0].length;
+    }
+    frag.append(node.data.slice(last));
+    node.replaceWith(frag);
+  }
+  if (arMarks.length) arFindGo(1);
+  else $('arFindText').textContent = 'В тексте не нашлось';
+  $('arFindPrev').disabled = $('arFindNext').disabled = arMarks.length < 2;
+}
+
+function arFindGo(step) {
+  if (!arMarks.length) return;
+  arMarks[arMarkAt]?.classList.remove('now');
+  arMarkAt = (arMarkAt + step + arMarks.length) % arMarks.length;
+  const mark = arMarks[arMarkAt];
+  mark.classList.add('now');
+  mark.scrollIntoView({ block: 'center', behavior: calm.matches ? 'auto' : 'smooth' });
+  $('arFindText').textContent = `${arMarkAt + 1} из ${arMarks.length}`;
+}
+
+$('arFindPrev').addEventListener('click', () => arFindGo(-1));
+$('arFindNext').addEventListener('click', () => arFindGo(1));
+
+// Enter в поиске ходит по совпадениям в открытой записи, стрелки по списку записей
+ar.search.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && arMarks.length) { e.preventDefault(); arFindGo(e.shiftKey ? -1 : 1); }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (screen !== 'archive' || openMenu() || $('dlg').open) return;
+  if (e.key === 'F3') { e.preventDefault(); arFindGo(e.shiftKey ? -1 : 1); return; }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  const inList = ar.list.contains(document.activeElement) || document.activeElement === ar.search;
+  if (!inList) return;
+  const items = [...ar.list.querySelectorAll('.ar-item')];
+  if (!items.length) return;
+  e.preventDefault();
+  const at = items.findIndex((b) => b.classList.contains('on'));
+  const next = items[Math.min(items.length - 1, Math.max(0, at + (e.key === 'ArrowDown' ? 1 : -1)))];
+  // список перерисуется, поэтому фокус ставим на новую кнопку, когда запись откроется
+  arOpen(next.dataset.path).then(() => {
+    const on = ar.list.querySelector('.ar-item.on');
+    on?.focus();
+    on?.scrollIntoView({ block: 'nearest' });
+  });
+});
 
 function arShowDigest(d) {
   const box = ar.digestBox;
@@ -1330,7 +1791,10 @@ function arShowDigest(d) {
 
 ar.search.addEventListener('input', () => {
   clearTimeout(arSearchTimer);
-  arSearchTimer = setTimeout(() => arLoad(ar.search.value), 250);
+  arSearchTimer = setTimeout(async () => {
+    await arLoad(ar.search.value);
+    if (arCurrent) arHighlight(ar.search.value);
+  }, 250);
 });
 
 document.querySelectorAll('.ar-filters button').forEach((b) => {
@@ -1357,25 +1821,46 @@ $('arCopyText').addEventListener('click', async () => {
 
 // --- меню «ещё» ---
 
+/** Закрывает любое открытое меню: «ещё» в архиве и выбор устройств. */
 function closeMenu() {
-  ar.menu.hidden = true;
-  ar.more.setAttribute('aria-expanded', 'false');
+  for (const menu of document.querySelectorAll('.menu')) menu.hidden = true;
+  for (const b of document.querySelectorAll('[aria-expanded="true"]')) b.setAttribute('aria-expanded', 'false');
 }
+
+const openMenu = () => document.querySelector('.menu:not([hidden])');
 
 ar.more.addEventListener('click', (e) => {
   e.stopPropagation();
   const open = ar.menu.hidden;
+  closeMenu();
   ar.menu.hidden = !open;
   ar.more.setAttribute('aria-expanded', String(open));
   if (open) ar.menu.querySelector('button').focus();
 });
 
 document.addEventListener('click', (e) => {
-  if (!ar.menu.hidden && !ar.menu.contains(e.target)) closeMenu();
+  const menu = openMenu();
+  if (menu && !menu.contains(e.target)) closeMenu();
 });
 
+// В открытом меню стрелки ходят по пунктам, Escape закрывает и возвращает фокус
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !ar.menu.hidden) { closeMenu(); ar.more.focus(); }
+  const menu = openMenu();
+  if (!menu) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    const owner = menu.previousElementSibling;
+    closeMenu();
+    owner?.focus();
+    return;
+  }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  if (menu.classList.contains('gain-pop')) return;
+  e.preventDefault();
+  const items = [...menu.querySelectorAll('button')];
+  const at = items.indexOf(document.activeElement);
+  const next = e.key === 'ArrowDown' ? at + 1 : at - 1;
+  items[(next + items.length) % items.length].focus();
 });
 
 $('arCopyPath').addEventListener('click', () => {
@@ -1435,7 +1920,7 @@ const st = {
   apiModel: $('stApiModel'), apiModels: $('stApiModels'),
   folderRow: $('stFolderRow'), folder: $('stFolder'),
   key: $('stKey'), forget: $('stForget'), keysLink: $('stKeysLink'),
-  lang: $('stLang'), save: $('stSave'), test: $('stTest'), result: $('stResult'),
+  lang: $('stLang'), test: $('stTest'), result: $('stResult'),
 };
 
 const ST_MODE_NOTE = {
@@ -1452,6 +1937,12 @@ const stProvider = () => stData.providers[st.provider.value];
 function stResult(text, kind) {
   st.result.textContent = text || '';
   st.result.dataset.kind = kind || '';
+  paintSaveRow();
+}
+
+// Строка под формой нужна для проверки связи по API и для ошибок сохранения
+function paintSaveRow() {
+  document.querySelector('.save-row').hidden = stMode !== 'api' && !st.result.textContent;
 }
 
 function fillOptions(select, pairs, value) {
@@ -1480,7 +1971,7 @@ async function stLoad() {
   stPaint();
 
   const s = await api().get_settings();
-  paintGain(s.gain, s.gain_min, s.gain_max);
+  paintGains(s);
 }
 
 function stPaint() {
@@ -1493,6 +1984,7 @@ function stPaint() {
   st.local.hidden = stMode !== 'local';
   st.api.hidden = stMode !== 'api';
   st.test.hidden = stMode !== 'api';
+  paintSaveRow();
 
   const m = stData.local_models.find((x) => x.id === st.model.value);
   st.modelNote.textContent = m ? m.note : '';
@@ -1526,15 +2018,51 @@ function stConfig() {
   };
 }
 
+// --- сохранение без кнопки: что поменял, то и сохранилось ---
+
+let stSaveTimer = null;
+let stSavedTimer = null;
+
+function stQueueSave(delay = 0) {
+  clearTimeout(stSaveTimer);
+  stSaveTimer = setTimeout(stSaveNow, delay);
+}
+
+/** Короткая отметка «Сохранено» в шапке, чтобы было видно, что кнопка не нужна. */
+function flashSaved() {
+  const s = $('stSaved');
+  s.hidden = false;
+  replay(s);
+  clearTimeout(stSavedTimer);
+  stSavedTimer = setTimeout(() => { s.hidden = true; }, 1800);
+}
+
+async function stSaveNow() {
+  const key = st.key.value;
+  const res = await api().asr_save(stConfig(), key);
+  if (res.error) { stResult(res.error, 'bad'); return; }
+  stData.keys = res.keys;
+  stData.config = stConfig();
+  if (key) st.key.value = '';
+  st.now.textContent = `сейчас ${res.label}`;
+  paintAsrLabel(res.label);
+  stPaint();
+  stResult('');
+  flashSaved();
+}
+
 st.mode.querySelectorAll('button').forEach((b) => {
   b.addEventListener('click', () => {
+    if (stMode === b.dataset.mode) return;
     stMode = b.dataset.mode;
     stResult('');
     stPaint();
+    stQueueSave();
   });
 });
 
-st.model.addEventListener('change', stPaint);
+st.model.addEventListener('change', () => { stPaint(); stQueueSave(); });
+st.lang.addEventListener('change', () => stQueueSave());
 
 st.provider.addEventListener('change', () => {
   // Модель одного сервиса другому не подходит: берём первую из его списка.
@@ -1543,7 +2071,17 @@ st.provider.addEventListener('change', () => {
   st.key.value = '';
   stResult('');
   stPaint();
+  stQueueSave();
 });
+
+// Текстовые поля сохраняются, когда перестал печатать
+for (const field of [st.apiModel, st.url, st.folder]) {
+  field.addEventListener('input', () => stQueueSave(800));
+}
+
+// Ключ сохраняется, когда ушёл из поля или нажал Enter: по буквам его слать незачем
+st.key.addEventListener('change', () => { if (st.key.value.trim()) stQueueSave(); });
+st.key.addEventListener('keydown', (e) => { if (e.key === 'Enter') st.key.blur(); });
 
 st.keysLink.addEventListener('click', () => api().open_url(stProvider().keys_url));
 
@@ -1571,38 +2109,69 @@ st.test.addEventListener('click', async () => {
   else stResult(`Сервер отвечает, ${res.ms} мс на реплику`, 'good');
 });
 
-st.save.addEventListener('click', async () => {
-  st.save.disabled = true;
-  const res = await api().asr_save(stConfig(), st.key.value);
-  st.save.disabled = false;
-  if (res.error) { stResult(res.error, 'bad'); return; }
-  stData.keys = res.keys;
-  stData.config = stConfig();
-  st.key.value = '';
-  st.now.textContent = `сейчас ${res.label}`;
-  paintAsrLabel(res.label);
-  stPaint();
-  stResult('Сохранено', 'good');
-});
+// --- усиление: у каждой дорожки своё, меняется прямо во время записи ---
 
-// --- усиление микрофона ---
+// Один и тот же уровень живёт в двух местах: в настройках и во всплывашке
+// в шапке дорожки. Двигаешь любой ползунок, второй и подписи догоняют
+const gainUi = {
+  me: {
+    send: (v) => api().set_mic_gain(v),
+    ranges: [$('gain'), $('gainMeRange')],
+    labels: [$('gainValue'), $('gainMePopValue'), $('gainMeBtn')],
+    chip: $('gainMeBtn'),
+    pop: $('gainMePop'),
+  },
+  them: {
+    send: (v) => api().set_them_gain(v),
+    ranges: [$('gainThem'), $('gainThemRange')],
+    labels: [$('gainThemValue'), $('gainThemPopValue'), $('gainThemBtn')],
+    chip: $('gainThemBtn'),
+    pop: $('gainThemPop'),
+  },
+};
+const gainTimers = {};
 
-const gain = $('gain');
-let gainTimer = null;
-
-function paintGain(value, min, max) {
-  if (min !== undefined) gain.min = min;
-  if (max !== undefined) gain.max = max;
-  gain.value = value;
-  $('gainValue').textContent = '×' + Number(value).toFixed(1);
+function paintGain(which, value, min, max) {
+  const g = gainUi[which];
+  for (const r of g.ranges) {
+    if (min !== undefined) r.min = min;
+    if (max !== undefined) r.max = max;
+    r.value = value;
+  }
+  const text = '×' + Number(value).toFixed(1);
+  for (const l of g.labels) l.textContent = text;
+  // Подсвечиваем, когда усиление включено: видно, что звук уже тянется
+  g.chip.classList.toggle('boosted', Number(value) > 1);
+  g.chip.setAttribute('aria-label', `${g.chip.title}: ${text}`);
 }
 
-gain.addEventListener('input', () => {
-  paintGain(gain.value);
-  // Пока тянут ползунок, событий десятки: в питон шлём только последнее
-  clearTimeout(gainTimer);
-  gainTimer = setTimeout(() => api().set_mic_gain(Number(gain.value)), 120);
-});
+function paintGains(s) {
+  paintGain('me', s.gain, s.gain_min, s.gain_max);
+  paintGain('them', s.them_gain ?? 1, s.gain_min, s.them_gain_max ?? s.gain_max);
+}
+
+for (const [which, g] of Object.entries(gainUi)) {
+  for (const r of g.ranges) {
+    r.addEventListener('input', () => {
+      paintGain(which, r.value);
+      // Пока тянут ползунок, событий десятки: в питон шлём только последнее
+      clearTimeout(gainTimers[which]);
+      gainTimers[which] = setTimeout(async () => {
+        await g.send(Number(r.value));
+        if (screen === 'settings') flashSaved();
+      }, 120);
+    });
+  }
+  g.chip.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = g.pop.hidden;
+    closeMenu();
+    if (!open) return;
+    g.pop.hidden = false;
+    g.chip.setAttribute('aria-expanded', 'true');
+    g.pop.querySelector('input').focus();
+  });
+}
 
 $('stOpenRecords').addEventListener('click', () => api().open_dir());
 $('stOpenBanks').addEventListener('click', () => api().open_banks_dir());
@@ -1611,19 +2180,27 @@ $('stOpenBanks').addEventListener('click', () => api().open_banks_dir());
 
 setPhase('idle');
 redrawIdleTracks();
+paintModeMark();
+// Ширина вкладок меняется, когда догружается шрифт
+document.fonts.ready.then(paintModeMark);
+window.addEventListener('resize', paintModeMark);
 
 window.addEventListener('pywebviewready', async () => {
   const d = await api().get_devices();
   fillSelect(mt.mic, d.mics, d.default_mic);
   fillSelect(mt.spk, d.loopbacks, d.default_loopback);
-  setPhase('idle');
+  // Если человек в прошлый раз выбрал не то, что Windows считает основным, берём его выбор
+  pickRemembered(mt.mic, 'micName');
+  pickRemembered(mt.spk, 'spkName');
   const s = await api().get_settings();
-  paintGain(s.gain, s.gain_min, s.gain_max);
+  paintGains(s);
   paintAsrLabel(s.asr_label);
   if (!d.loopbacks.length) {
     paintState('Не нашёл звук собеседника', 'error', 'Проверь, что наушники подключены');
   } else {
-    paintState('Готово к записи', 'idle', `Распознаёт ${s.asr_label}`);
+    paintState('Готово к записи', 'idle', 'Пока не начнёшь запись, звук никуда не пишется');
   }
+  setPhase('idle');
+  paintHeard();
   redrawIdleTracks();
 });

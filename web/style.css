@@ -91,9 +91,13 @@
 
   --fast: 140ms;
   --ease: cubic-bezier(0.22, 0.8, 0.36, 1);
+  /* Ответ на действие: раскрытие меню, смена экрана, отметка тезиса */
+  --move: 220ms;
+  /* Пружинка без отскока назад: для кнопки записи и галочек */
+  --snap: cubic-bezier(0.34, 1.4, 0.64, 1);
 
   --track-h: 46px;
-  --head-w: 340px;
+  --head-w: 390px;
 }
 
 /* ================================================================= основа */
@@ -152,10 +156,61 @@ p { margin: 0; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
+    animation: none !important;
+  }
 }
+
+/* ============================================================== переходы
+
+   Окно меняет состояние через переход браузера (vt() в app.js). Всё окно
+   не мерцает: двигается только рабочая область и то, что получило своё имя.
+   Вид перехода задаёт data-vt на корне. */
+
+::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+::view-transition-group(*) { animation-duration: var(--move); animation-timing-function: var(--ease); }
+
+.main { view-transition-name: main; }
+
+@keyframes vt-out-left { to { opacity: 0; transform: translateX(-18px); } }
+@keyframes vt-in-right { from { opacity: 0; transform: translateX(18px); } }
+@keyframes vt-out-right { to { opacity: 0; transform: translateX(18px); } }
+@keyframes vt-in-left { from { opacity: 0; transform: translateX(-18px); } }
+@keyframes vt-fade-out { to { opacity: 0; } }
+@keyframes vt-rise-in { from { opacity: 0; transform: translateY(12px); } }
+
+/* разделы: дальше по списку едет вправо, назад влево */
+:root[data-vt="next"]::view-transition-old(main) { animation: 140ms ease-in both vt-out-left; }
+:root[data-vt="next"]::view-transition-new(main) { animation: 240ms var(--ease) 40ms both vt-in-right; }
+:root[data-vt="back"]::view-transition-old(main) { animation: 140ms ease-in both vt-out-right; }
+:root[data-vt="back"]::view-transition-new(main) { animation: 240ms var(--ease) 40ms both vt-in-left; }
+
+/* вопрос тренажёра сменяет вопрос: старый тает, новый поднимается */
+:root[data-vt="question"]::view-transition-old(main) { animation: 120ms ease-in both vt-fade-out; }
+:root[data-vt="question"]::view-transition-new(main) { animation: 300ms var(--ease) 60ms both vt-rise-in; }
+
+/* разбор дубля: дорожка ответа переезжает на своё место в разборе (имя take),
+   остальное проявляется вокруг неё */
+:root[data-vt="review"] #ivAsk .timeline,
+:root[data-vt="review"] #ivResult .timeline { view-transition-name: take; }
+:root[data-vt="review"]::view-transition-group(take) { animation-duration: 420ms; }
+:root[data-vt="review"]::view-transition-old(main) { animation: 140ms ease-in both vt-fade-out; }
+:root[data-vt="review"]::view-transition-new(main) { animation: 320ms var(--ease) 120ms both vt-rise-in; }
+
+/* старт записи: саундчек уходит вверх, стенограмма занимает место */
+:root[data-vt="rec"] .intro { view-transition-name: intro; }
+:root[data-vt="rec"]::view-transition-old(intro) { animation: 260ms var(--ease) both vt-out-up; }
+:root[data-vt="rec"]::view-transition-old(main), :root[data-vt="rec"]::view-transition-new(main) { animation: none; }
+@keyframes vt-out-up { to { opacity: 0; transform: translateY(-16px); } }
+
+/* Появление по действию: меню, диалог, тост, отметка «сохранено» */
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes fade-in { from { opacity: 0; } }
 
 /* ================================================================= кнопки */
 
@@ -208,9 +263,32 @@ button:disabled { cursor: default; }
 }
 .link:hover { text-decoration-color: currentColor; }
 
-/* Точка записи: в покое круг, во время записи квадрат «стоп» */
-.dot-rec { width: 12px; height: 12px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+/* Точка записи: в покое круг, во время записи квадрат «стоп». Круг сжимается
+   в квадрат, а не подменяется: видно, что та же кнопка теперь останавливает */
+.dot-rec {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+  transition: border-radius var(--move) var(--snap), width var(--move) var(--snap), height var(--move) var(--snap);
+}
 .dot-rec.stop { width: 11px; height: 11px; border-radius: 2px; }
+
+/* Подсказка клавиши прямо на кнопке */
+kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  margin-left: 2px;
+  font: 600 11px/1 "Golos Text", "Segoe UI", sans-serif;
+  color: inherit;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 4px;
+  opacity: 0.75;
+}
 
 /* =================================================================== поля */
 
@@ -321,7 +399,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .brand img { width: 24px; height: 24px; border-radius: 6px; -webkit-user-drag: none; }
 
-.modes { display: flex; gap: 4px; }
+.modes { position: relative; display: flex; gap: 4px; }
 .mode {
   position: relative;
   padding: 0 12px;
@@ -330,19 +408,24 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--ink-2);
   background: none;
   border: none;
+  transition: color var(--fast) var(--ease);
 }
 .mode:hover { color: var(--ink); }
 .mode[aria-current="page"] { color: var(--ink); }
-.mode[aria-current="page"]::after {
-  content: "";
+
+/* Черта под выбранной вкладкой одна на всех и переезжает к новой */
+.mode-mark {
   position: absolute;
-  left: 12px;
-  right: 12px;
+  left: 0;
   bottom: -1px;
+  width: 0;
   height: 2px;
   background: var(--ink);
   border-radius: 2px 2px 0 0;
+  transition: transform 300ms var(--ease), width 300ms var(--ease), opacity var(--fast);
+  pointer-events: none;
 }
+.mode-mark.off { opacity: 0; }
 
 .bar-end { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 
@@ -429,7 +512,58 @@ input[type="range"]::-webkit-slider-thumb {
 .track-name::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: currentColor; }
 .track.me .track-name { color: var(--me); }
 .track.them .track-name { color: var(--them); }
-.track-head select { height: 32px; background: var(--paper); }
+
+/* Устройство дорожки: имя и стрелка, меню раскрывается под ним */
+.dev { position: relative; min-width: 0; flex: 1 1 auto; }
+.dev-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  font-size: var(--t-sm);
+  font-weight: 550;
+  color: var(--ink);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.dev-btn .dev-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-btn .ic { width: 15px; height: 15px; color: var(--ink-2); transition: transform var(--move) var(--ease); }
+.dev-btn:hover:not(:disabled), .dev-btn[aria-expanded="true"] { background: var(--paper); border-color: var(--line); }
+.dev-btn[aria-expanded="true"] .ic { transform: rotate(180deg); }
+.dev-btn:disabled { color: var(--ink-2); }
+.dev-btn:disabled .ic { opacity: 0; }
+
+/* Усиление дорожки: кнопка с текущим «×» и ползунок во всплывашке.
+   Меняется прямо во время записи, уровень видно на той же дорожке */
+.gain { position: relative; flex-shrink: 0; }
+.gain-btn {
+  height: 28px;
+  padding: 0 8px;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.gain-btn:hover, .gain-btn[aria-expanded="true"] { color: var(--ink); background: var(--paper); border-color: var(--line-strong); }
+.gain-btn.boosted { color: var(--ink); border-color: var(--line-strong); }
+.menu.gain-pop { min-width: 300px; padding: 14px 16px 12px; }
+.gain-pop label { display: flex; justify-content: space-between; gap: 12px; font-size: var(--t-sm); font-weight: 600; }
+.gain-pop input[type="range"] { max-width: none; }
+.gain-pop .help { margin-top: 0; }
+
+.dev-menu { min-width: 280px; max-width: 420px; }
+.dev-menu button { justify-content: space-between; }
+.dev-menu .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-menu button .ic { visibility: hidden; color: var(--ink); }
+.dev-menu button[aria-selected="true"] { font-weight: 600; }
+.dev-menu button[aria-selected="true"] .ic { visibility: visible; }
 
 .wave { width: 100%; height: var(--track-h); display: block; }
 .track.me .wave, .wave.me { color: var(--me); }
@@ -473,8 +607,12 @@ input[type="range"]::-webkit-slider-thumb {
   font-size: var(--t-xl);
   font-weight: 600;
   letter-spacing: -0.02em;
+  animation: rise-in 260ms var(--ease) both;
 }
 .clock[hidden] { display: none; }
+
+/* Пока идёт запись, огонёк на кнопке дышит: видно и краем глаза */
+body.recording #record .dot-rec { animation: lamp 1.6s ease-in-out infinite; }
 
 .transport-end { display: flex; gap: 8px; flex-shrink: 0; }
 
@@ -483,11 +621,64 @@ input[type="range"]::-webkit-slider-thumb {
 .sheet { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; }
 .feed { overflow-y: auto; padding: 22px 18px 48px; scroll-behavior: smooth; }
 
-.intro { max-width: 620px; padding: 6vh 0 0 calc(var(--head-w) + 0px); }
+/* Саундчек: колонка начинается там же, где дорожки, чтобы строки
+   готовности читались как подписи к ним */
+.intro { padding: 5vh 0 0 var(--head-w); }
 .intro h1 { font-size: var(--t-2xl); }
-.intro p { margin-top: 10px; font-size: var(--t-md); color: var(--ink-2); max-width: 52ch; }
-.intro .hint { display: flex; gap: 10px; align-items: flex-start; margin-top: 22px; font-size: var(--t-sm); }
-.intro .hint .ic { margin-top: 1px; color: var(--ink-2); }
+.intro .lead { margin-top: 8px; font-size: var(--t-md); color: var(--ink-2); max-width: 50ch; }
+.intro .hint { display: flex; gap: 10px; align-items: flex-start; margin-top: 26px; font-size: var(--t-sm); color: var(--ink-2); max-width: 56ch; }
+.intro .hint .ic { margin-top: 1px; }
+
+.ready { margin: 24px 0 0; padding: 0; list-style: none; max-width: 560px; border-top: 1px solid var(--line); }
+.ready li {
+  display: grid;
+  grid-template-columns: 30px 170px minmax(0, 1fr);
+  align-items: center;
+  min-height: 48px;
+  border-bottom: 1px solid var(--line);
+}
+.ready b { font-weight: 600; }
+.ready .ck-text { font-size: var(--t-sm); color: var(--ink-2); transition: color var(--move) var(--ease); }
+.ready .ck-text .link { margin-left: 6px; font-size: var(--t-sm); }
+
+/* Кружок ждёт пунктиром и медленно крутится. Когда звук пришёл, он
+   заливается цветом дорожки, а галочка дорисовывается штрихом */
+.ck {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--line-strong);
+  transition: background var(--move) var(--ease), border-color var(--move) var(--ease);
+}
+.ck .ic { width: 12px; height: 12px; stroke-width: 3; stroke-dasharray: 24; color: var(--on-ink); }
+.ready li:not([data-state="ok"]) .ck .ic { opacity: 0; }
+.ready li[data-state="wait"] .ck { animation: ck-wait 6s linear infinite; }
+@keyframes ck-wait { to { transform: rotate(360deg); } }
+
+.ready li[data-state="ok"] .ck { border-style: solid; animation: ck-pop 360ms var(--snap); }
+.ready li[data-state="ok"] .ck .ic { animation: ck-draw 320ms var(--ease) 120ms both; }
+.ready li.me[data-state="ok"] .ck { background: var(--me); border-color: var(--me); }
+.ready li.them[data-state="ok"] .ck { background: var(--them); border-color: var(--them); }
+.ready li.asr[data-state="ok"] .ck { background: var(--ink); border-color: var(--ink); }
+.ready li.me[data-state="ok"] .ck-text { color: var(--me); }
+.ready li.them[data-state="ok"] .ck-text { color: var(--them); }
+.ready li[data-state="bad"] .ck { border: 1.5px solid var(--rec); }
+.ready li[data-state="bad"] .ck-text { color: var(--rec); }
+@keyframes ck-pop { 0% { transform: scale(0.6); } 100% { transform: scale(1); } }
+/* галочка дорисовывается штрихом: от пустой к целой */
+@keyframes ck-draw { from { stroke-dashoffset: 24; } }
+/* у строки распознавания отметка стоит сразу, рисовать её незачем */
+.ready li.asr .ck .ic { animation: none; }
+
+/* Запись идёт, а реплик ещё нет: строка на месте будущей стенограммы */
+.wait-first {
+  margin-left: 202px;
+  max-width: 60ch;
+  color: var(--ink-2);
+  animation: fade-in 400ms var(--ease) 600ms both;
+}
 
 /* --- стенограмма: время, кто, текст --- */
 
@@ -527,7 +718,7 @@ input[type="range"]::-webkit-slider-thumb {
 .to-bottom { position: absolute; right: 22px; bottom: 18px; border-radius: 99px; box-shadow: var(--shadow-pop); }
 
 /* Итог записи под стенограммой: обычный список фактов, без отдельной коробки */
-.report { margin: 34px 0 0 202px; max-width: 70ch; user-select: text; }
+.report { margin: 34px 0 0 202px; max-width: 70ch; user-select: text; animation: rise-in 420ms var(--ease) 300ms both; }
 .report h2 { font-size: var(--t-md); margin-bottom: 8px; }
 .facts { margin: 0; }
 .facts div { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
@@ -657,6 +848,21 @@ input[type="range"]::-webkit-slider-thumb {
    по времени, всё после неё красное */
 .timeline { position: relative; margin-top: 34px; }
 .timeline .wave { height: 64px; color: var(--me); }
+
+/* Пока ответ расшифровывается, по дорожке слева направо бежит блик */
+.timeline.busy { overflow: hidden; }
+.timeline.busy::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: calc(100% - 22px);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--paper) 70%, transparent) 50%, transparent);
+  animation: scan 1.1s var(--ease) infinite;
+  pointer-events: none;
+}
+@keyframes scan { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 .scale { position: relative; height: 18px; margin-top: 4px; font-size: var(--t-xs); color: var(--ink-2); }
 .scale span { position: absolute; top: 0; transform: translateX(-50%); }
 .scale span:first-child { transform: none; }
@@ -680,6 +886,12 @@ input[type="range"]::-webkit-slider-thumb {
 .rec-round:active:not(:disabled) { transform: scale(0.96); }
 .rec-round .dot-rec { width: 24px; height: 24px; }
 body.answering .rec-round .dot-rec { width: 22px; height: 22px; border-radius: 4px; }
+/* пока говоришь, кольцо вокруг кнопки расходится волной */
+body.answering .rec-round { animation: ring 1.6s var(--ease) infinite; }
+@keyframes ring {
+  0% { box-shadow: 0 0 0 6px var(--rec-soft), 0 0 0 6px color-mix(in srgb, var(--rec) 30%, transparent); }
+  100% { box-shadow: 0 0 0 6px var(--rec-soft), 0 0 0 22px transparent; }
+}
 
 .timer { font-size: 40px; font-weight: 600; line-height: 1; letter-spacing: -0.02em; }
 .timer.over { color: var(--rec); }
@@ -721,12 +933,32 @@ body.answering .rec-round .dot-rec { width: 22px; height: 22px; border-radius: 4
 
 .checks { margin-top: 20px; }
 .checks h3 { font-size: var(--t-base); margin-bottom: 6px; }
-.thesis { display: flex; gap: 10px; padding: 5px 0; user-select: text; }
+
+/* Тезисы отмечаются по очереди, как будто интервьюер идёт по своему списку.
+   --i ставит номер тезиса в app.js */
+.thesis {
+  display: flex;
+  gap: 10px;
+  padding: 5px 0;
+  user-select: text;
+  animation: rise-in 260ms var(--ease) both;
+  animation-delay: calc(380ms + var(--i, 0) * 110ms);
+}
 .thesis .mark { display: grid; place-items: center; width: 20px; height: 20px; margin-top: 1px; flex-shrink: 0; border-radius: 50%; }
-.thesis .mark .ic { width: 13px; height: 13px; stroke-width: 2.75; }
+.thesis .mark .ic {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2.75;
+  stroke-dasharray: 24;
+  animation: ck-draw 260ms var(--ease) both;
+  animation-delay: calc(500ms + var(--i, 0) * 110ms);
+}
 .thesis.ok { color: var(--ink-2); }
 .thesis.ok .mark { background: var(--me-soft); color: var(--me); }
 .thesis.no .mark { background: var(--rec-soft); color: var(--rec); }
+
+/* вердикт и цифры проявляются первыми, до тезисов */
+.result-head, .measures { animation: rise-in 300ms var(--ease) 120ms both; }
 
 .followup {
   display: flex;
@@ -738,6 +970,9 @@ body.answering .rec-round .dot-rec { width: 22px; height: 22px; border-radius: 4
   border-left: 3px solid var(--warn);
   border-radius: 0 var(--r-box) var(--r-box) 0;
   user-select: text;
+  /* выезжает последним, когда видно, какой тезис пропущен */
+  animation: rise-in 320ms var(--ease) both;
+  animation-delay: calc(560ms + var(--i, 0) * 110ms);
 }
 .followup small { display: block; font-size: var(--t-xs); font-weight: 600; color: var(--warn); }
 .followup .btn { margin-left: auto; flex-shrink: 0; }
@@ -751,11 +986,65 @@ body.answering .rec-round .dot-rec { width: 22px; height: 22px; border-radius: 4
 
 /* --- конец тренировки --- */
 
-.done { padding-top: 7vh; }
-.done h1 { font-size: var(--t-2xl); }
-.done > p { margin-top: 10px; font-size: var(--t-md); color: var(--ink-2); max-width: 54ch; }
+/* .page.done, а не .done: пройденный отрезок в полосе вопросов тоже .done */
+.page.done { padding-top: 6vh; max-width: 980px; }
+.page.done h1 { font-size: var(--t-2xl); }
+.page.done > p { margin-top: 8px; font-size: var(--t-md); color: var(--ink-2); max-width: 60ch; }
 .review { margin-top: 26px; }
-.review .help { margin-top: 10px; max-width: 54ch; }
+.review .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+.review .help { margin-top: 10px; max-width: 60ch; }
+
+/* Итог по вопросам: последний дубль каждого. Строки проявляются сверху вниз,
+   полоса времени дорастает до своей длины */
+.summary { margin-top: 26px; }
+.sum-head, .sum-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 180px 56px 64px 72px;
+  align-items: center;
+  column-gap: 14px;
+}
+.sum-head { padding: 0 0 6px; font-size: var(--t-xs); color: var(--ink-2); border-bottom: 1px solid var(--line); }
+.sum-head span:nth-child(n + 4) { text-align: right; }
+.sum-row {
+  min-height: 54px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  animation: rise-in 280ms var(--ease) both;
+  animation-delay: calc(160ms + var(--i, 0) * 70ms);
+}
+.sum-row .mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; }
+.sum-row .mark .ic { width: 13px; height: 13px; stroke-width: 2.5; }
+.sum-row.clean .mark { background: var(--me-soft); color: var(--me); }
+.sum-row.weak .mark { background: var(--warn-soft); color: var(--warn); }
+.sum-row .q { min-width: 0; line-height: 1.3; }
+.sum-row .q b { display: block; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sum-row .q small { font-size: var(--t-xs); color: var(--ink-2); }
+.sum-row .num { text-align: right; font-weight: 600; }
+.sum-row .num.bad { color: var(--warn); }
+.sum-row.skipped { color: var(--ink-2); }
+.sum-row.skipped .q b { font-weight: 400; }
+.sum-row .skip-note { grid-column: 3 / -1; font-size: var(--t-sm); }
+
+/* Полоса времени: серое окно это цель, длина полосы ровно секунды ответа
+   на той же шкале. Внутри окна зелёная, мимо окна янтарная или красная */
+.tbar { position: relative; display: block; height: 10px; border-radius: 3px; background: var(--fill); }
+.tbar i { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--ink-2) 22%, var(--paper)); border-radius: 2px; }
+.tbar b {
+  position: absolute;
+  left: 0;
+  top: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--ink-2);
+  transform-origin: left center;
+  animation: grow 520ms var(--ease) both;
+  animation-delay: calc(260ms + var(--i, 0) * 70ms);
+}
+.tbar b.ok { background: var(--me); }
+.tbar b.short { background: var(--warn); }
+.tbar b.over { background: var(--rec); }
+@keyframes grow { from { transform: scaleX(0); } }
+
 
 /* ================================================================= архив */
 
@@ -804,9 +1093,38 @@ body.answering .rec-round .dot-rec { width: 22px; height: 22px; border-radius: 4
 .empty p { margin-top: 6px; color: var(--ink-2); max-width: 40ch; }
 
 .ar-view { padding: 26px 28px 48px; }
+.ar-view.enter { animation: fade-in 220ms var(--ease); }
 .ar-head h1 { font-size: var(--t-xl); overflow-wrap: anywhere; }
 .ar-head span { display: block; margin-top: 4px; font-size: var(--t-sm); color: var(--ink-2); }
 .ar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+
+/* Найденное поиском: где стоишь сейчас и стрелки к соседним совпадениям */
+.find {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 3px 3px 3px 12px;
+  font-size: var(--t-sm);
+  background: var(--fill);
+  border-radius: 99px;
+  animation: pop-in var(--move) var(--ease);
+}
+.find span { min-width: 90px; color: var(--ink-2); }
+.find .btn.icon { width: 30px; height: 30px; border: none; background: none; border-radius: 50%; }
+.find .btn.icon:hover:not(:disabled) { background: var(--paper); }
+
+mark {
+  color: inherit;
+  background: color-mix(in srgb, var(--warn) 22%, var(--paper));
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 22%, var(--paper));
+  transition: background var(--move) var(--ease), box-shadow var(--move) var(--ease);
+}
+mark.now {
+  background: color-mix(in srgb, var(--warn) 48%, var(--paper));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 48%, var(--paper));
+}
 
 .menu-wrap { position: relative; }
 .menu {
@@ -820,6 +1138,8 @@ body.answering .rec-round .dot-rec { width: 22px; height: 22px; border-radius: 4
   border: 1px solid var(--line);
   border-radius: var(--r-box);
   box-shadow: var(--shadow-pop);
+  transform-origin: top left;
+  animation: pop-in 160ms var(--ease);
 }
 .menu button {
   display: flex;
@@ -893,6 +1213,22 @@ body.answering .rec-round .dot-rec { width: 22px; height: 22px; border-radius: 4
 .privacy { margin-top: 12px; padding: 10px 14px; font-size: var(--t-sm); background: var(--warn-soft); border-left: 3px solid var(--warn); border-radius: 0 var(--r-box) var(--r-box) 0; }
 
 .save-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 18px 0 0 190px; border-top: 1px solid var(--line); }
+
+/* «Сохранено» в шапке настроек: появляется на секунду после каждого изменения */
+.saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 6px 12px;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--me);
+  background: var(--me-soft);
+  border-radius: 99px;
+}
+.saved .ic { width: 15px; height: 15px; stroke-width: 2.5; }
+.saved.enter { animation: pop-in var(--move) var(--snap); }
 #stResult { font-size: var(--t-sm); color: var(--ink-2); }
 #stResult[data-kind="good"] { color: var(--me); }
 #stResult[data-kind="bad"] { color: var(--rec); }
@@ -908,7 +1244,9 @@ body.answering .rec-round .dot-rec { width: 22px; height: 22px; border-radius: 4
   border-radius: 12px;
   box-shadow: var(--shadow-pop);
 }
-.dlg::backdrop { background: rgb(10 12 16 / 0.45); }
+.dlg[open] { animation: dlg-in 220ms var(--ease); }
+.dlg[open]::backdrop { background: rgb(10 12 16 / 0.45); animation: fade-in 220ms ease; }
+@keyframes dlg-in { from { opacity: 0; transform: translateY(8px) scale(0.97); } }
 .dlg-body { padding: 22px 22px 18px; }
 .dlg-body h2 { font-size: var(--t-lg); }
 .dlg-body p { margin-top: 8px; color: var(--ink-2); }
@@ -931,16 +1269,18 @@ body.answering .rec-round .dot-rec { width: 22px; height: 22px; border-radius: 4
   border-radius: 8px;
   box-shadow: var(--shadow-pop);
   transform: translateX(-50%);
+  animation: toast-in 260ms var(--ease);
 }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 10px); } }
 
 /* ============================================================ узкое окно */
 
 @media (max-width: 1000px) {
-  :root { --head-w: 300px; }
+  :root { --head-w: 340px; }
   .track-name { width: 120px; }
   .asr-chip { display: none; }
   .utt { grid-template-columns: 60px 104px minmax(0, 1fr); }
-  .report { margin-left: 164px; }
+  .report, .wait-first { margin-left: 164px; }
   #screen-archive:not([hidden]) { grid-template-columns: 260px minmax(0, 1fr); }
   .ar-body .utt { grid-template-columns: 56px 100px minmax(0, 1fr); }
 }

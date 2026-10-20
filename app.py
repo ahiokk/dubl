@@ -56,6 +56,9 @@ THEM = "Собеседник"
 # Границы усиления микрофона. Ниже единицы опускать незачем, а выше восьми
 # вытянутый шум начинает мешать распознаванию сильнее, чем помогает громкость
 GAIN_MIN, GAIN_MAX = 1.0, 8.0
+# Звук из компьютера можно тянуть сильнее: это чистый цифровой сигнал без шума
+# комнаты, а тихим он бывает, когда в приложении созвона убавлена громкость
+THEM_GAIN_MAX = 12.0
 
 # Как часто отправлять в окно накопившиеся реплики и уровни звука
 PUMP_SEC = 0.1
@@ -66,6 +69,17 @@ BANKS_POLL_SEC = 2.0
 STOP_WAIT_SEC = 600
 # Одна и та же ошибка распознавания повторяется в окне не чаще этого
 ERROR_REPEAT_SEC = 30
+
+
+class _Discard:
+    """Очередь, которая ничего не хранит. Саундчеку реплики не нужны,
+    а обычная очередь за час проверки набрала бы гигабайт звука."""
+
+    def put(self, *args, **kwargs) -> None:
+        pass
+
+
+_DISCARD = _Discard()
 
 
 def hhmmss(seconds: float) -> str:
@@ -93,6 +107,13 @@ class Api:
 
     def stop(self) -> dict:
         return self._rec.stop()
+
+    def monitor_start(self, mic_index: int, spk_index: int,
+                      mic_name: str = "", spk_name: str = "") -> dict:
+        return self._rec.monitor_start(mic_index, spk_index, mic_name, spk_name)
+
+    def monitor_stop(self) -> dict:
+        return self._rec.monitor_stop()
 
     def open_dir(self) -> dict:
         return self._rec.open_dir()
@@ -146,6 +167,9 @@ class Api:
     def set_mic_gain(self, value: float) -> dict:
         return self._rec.set_mic_gain(value)
 
+    def set_them_gain(self, value: float) -> dict:
+        return self._rec.set_them_gain(value)
+
     # ---------------------------------------------------------- мок-собес
 
     def interview_setup(self) -> dict:
@@ -153,9 +177,9 @@ class Api:
 
     def interview_start(self, bank_file: str, level: str, mic_index: int,
                         mic_name: str = "", categories: list[str] | None = None,
-                        shuffle: bool = False) -> dict:
+                        shuffle: bool = False, only_ids: list[str] | None = None) -> dict:
         return self._rec.interview_start(
-            bank_file, level, mic_index, mic_name, categories, shuffle
+            bank_file, level, mic_index, mic_name, categories, shuffle, only_ids
         )
 
     def mic_check_start(self, mic_index: int, mic_name: str = "") -> dict:
@@ -221,10 +245,13 @@ class Recorder:
 
         self.settings = self._load_settings()
         self.mic_gain = float(self.settings.get("усиление_микрофона", 1.0))
+        self.them_gain = float(self.settings.get("усиление_собеседника", 1.0))
         self.asr_cfg = normalize_config(self.settings.get("распознавание"))
 
         self.recording = threading.Event()
         self.checking = threading.Event()  # открыт микрофон ради проверки уровня
+        # Саундчек на экране записи: обе дорожки открыты, но ничего не пишется
+        self.monitoring = threading.Event()
         self.mic_peak = 0.0
         self.worker_stop = threading.Event()
         self.worker: threading.Thread | None = None
@@ -259,11 +286,23 @@ class Recorder:
         self._save_settings()
         return {"ok": True, "gain": self.mic_gain}
 
+    def set_them_gain(self, value: float) -> dict:
+        """Усиление звука собеседника. Тихий созвон распознаётся с пропусками:
+        VAD не признаёт речью слишком тихий голос, и реплика теряется целиком."""
+        self.them_gain = max(GAIN_MIN, min(THEM_GAIN_MAX, float(value)))
+        if self.capture is not None:
+            self.capture.set_gain(THEM, self.them_gain)
+        self.settings["усиление_собеседника"] = self.them_gain
+        self._save_settings()
+        return {"ok": True, "gain": self.them_gain}
+
     def get_settings(self) -> dict:
         return {
             "gain": self.mic_gain,
             "gain_min": GAIN_MIN,
             "gain_max": GAIN_MAX,
+            "them_gain": self.them_gain,
+            "them_gain_max": THEM_GAIN_MAX,
             "asr_label": describe(self.asr_cfg),
         }
 
@@ -416,6 +455,34 @@ class Recorder:
             self.commands.put(("stop", None, None))
         return {"ok": True}
 
+    def monitor_start(self, mic_index: int, spk_index: int,
+                      mic_name: str = "", spk_name: str = "") -> dict:
+        """Саундчек: открывает оба источника, чтобы до записи было видно, что их слышно.
+
+        Звук никуда не пишется и не распознаётся. Вызывается заново при смене
+        устройства, старые источники при этом закрываются.
+        """
+        if self.recording.is_set() or self.checking.is_set():
+            return {"error": "устройства заняты"}
+        devices = (self._resolve(mic_index, mic_name, "mic"),
+                   self._resolve(spk_index, spk_name, "loopback"))
+        done: "queue.Queue[dict]" = queue.Queue()
+        self.commands.put(("monitor", devices, done))
+        try:
+            return done.get(timeout=20)
+        except queue.Empty:
+            return {"error": "устройства не отозвались"}
+
+    def monitor_stop(self) -> dict:
+        if not self.monitoring.is_set():
+            return {"ok": True}
+        done: "queue.Queue[dict]" = queue.Queue()
+        self.commands.put(("monitor_stop", None, done))
+        try:
+            return done.get(timeout=20)
+        except queue.Empty:
+            return {"error": "не удалось закрыть устройства"}
+
     def open_dir(self) -> dict:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         os.startfile(self.out_path.parent if self.out_path else OUT_DIR)
@@ -469,6 +536,10 @@ class Recorder:
                     b.put(self._do_mic_check(a))
                 elif cmd == "mic_check_stop":
                     b.put(self._do_mic_check_stop())
+                elif cmd == "monitor":
+                    b.put(self._do_monitor(*a))
+                elif cmd == "monitor_stop":
+                    b.put(self._end_monitor())
             except Exception:
                 last = traceback.format_exc(limit=2).strip().split("\n")[-1]
                 # Ответ ждут на той стороне: без него интерфейс висит до таймаута
@@ -509,6 +580,7 @@ class Recorder:
             self._call("error", f"Распознавание не запустилось: {exc}")
             return
 
+        self._end_monitor()
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         now = datetime.now()
         stamp = now.strftime("%Y-%m-%d_%H-%M")
@@ -536,6 +608,7 @@ class Recorder:
                 self.capture.add(spk_index, THEM, self.segments, self.session_start,
                                  on_level=self._on_level)
             self.capture.set_gain(ME, self.mic_gain)
+            self.capture.set_gain(THEM, self.them_gain)
             self.capture.start()
         except Exception as exc:
             self.capture = None
@@ -683,7 +756,7 @@ class Recorder:
                 elif kind == "error":
                     self._call("error", payload)
 
-            if not (self.recording.is_set() or self.checking.is_set()):
+            if not (self.recording.is_set() or self.checking.is_set() or self.monitoring.is_set()):
                 last_levels = None
                 continue
 
@@ -785,7 +858,7 @@ class Recorder:
 
     def interview_start(self, bank_file: str, level: str, mic_index: int,
                         mic_name: str = "", categories: list[str] | None = None,
-                        shuffle: bool = False) -> dict:
+                        shuffle: bool = False, only_ids: list[str] | None = None) -> dict:
         try:
             bank = Bank.load(BANKS_DIR / bank_file)
         except Exception as exc:
@@ -793,15 +866,17 @@ class Recorder:
         if not bank.questions:
             return {"error": "В банке нет вопросов"}
 
-        self.session = Session(bank, level, self.analyzer, categories, shuffle)
+        self.session = Session(bank, level, self.analyzer, categories, shuffle, only_ids)
         if not self.session.questions:
             self.session = None
             return {"error": "На этих темах и уровне вопросов не осталось"}
 
         # Запоминаем выбор тем по каждому банку: под техническую тренировку
-        # и под поведенческую наборы разные, переключаться придётся часто
-        self.settings.setdefault("темы", {})[bank_file] = list(categories or [])
-        self._save_settings()
+        # и под поведенческую наборы разные, переключаться придётся часто.
+        # Прогон слабых вопросов выбор тем не меняет
+        if not only_ids:
+            self.settings.setdefault("темы", {})[bank_file] = list(categories or [])
+            self._save_settings()
 
         self.interview_mic = mic_index
         self.interview_mic_name = mic_name
@@ -893,13 +968,47 @@ class Recorder:
             return {"error": "сессия не начата"}
         path = self.session.save()
         prompt = self.session.prompt_for_review() if path else ""
+        summary = self.session.summary()
         self.session = None
-        return {"ok": True, "path": str(path) if path else "", "prompt": prompt}
+        return {"ok": True, "path": str(path) if path else "", "prompt": prompt, "summary": summary}
 
     # ----------------------------------------------------- запись одного ответа
 
+    def _do_monitor(self, mic_index: int, spk_index: int) -> dict:
+        """Открывает оба источника ради уровня. Реплики выбрасываются сразу."""
+        # Запись могла начаться, пока команда ждала в очереди
+        if self.recording.is_set() or self.checking.is_set():
+            return {"error": "устройства заняты"}
+        self._end_monitor()
+        capture = Capture()
+        try:
+            if mic_index >= 0:
+                capture.add(mic_index, ME, _DISCARD, time.time(), on_level=self._on_level)
+            if spk_index >= 0:
+                capture.add(spk_index, THEM, _DISCARD, time.time(), on_level=self._on_level)
+            capture.set_gain(ME, self.mic_gain)
+            capture.set_gain(THEM, self.them_gain)
+            capture.start()
+        except Exception as exc:
+            capture.close()
+            return {"error": f"Устройство не открылось: {exc}"}
+        self.capture = capture
+        self.monitoring.set()
+        return {"ok": True}
+
+    def _end_monitor(self) -> dict:
+        """Закрывает саундчек, если он открыт. Зовётся только из потока устройств."""
+        if self.monitoring.is_set():
+            self.monitoring.clear()
+            if self.capture is not None:
+                self.capture.close()
+                self.capture = None
+            self.levels = {ME: 0.0, THEM: 0.0}
+        return {"ok": True}
+
     def _do_mic_check(self, mic_index: int) -> dict:
         """Открывает вход и гонит уровень в окно. Расшифровка не нужна."""
+        self._end_monitor()
         self.segments = queue.Queue()
         try:
             self.capture = Capture()
@@ -933,6 +1042,7 @@ class Recorder:
         except Exception as exc:
             return {"error": f"Распознавание не запустилось: {exc}"}
 
+        self._end_monitor()
         self.answer_segments = []
         self.segments = queue.Queue()
         self.session_start = time.time()
@@ -1018,6 +1128,13 @@ class Recorder:
         Останавливать напрямую нельзя: устройства принадлежат аудио-потоку,
         а сюда мы попадаем из потока окна.
         """
+        if self.monitoring.is_set():
+            closed: "queue.Queue[dict]" = queue.Queue()
+            self.commands.put(("monitor_stop", None, closed))
+            try:
+                closed.get(timeout=10)
+            except queue.Empty:
+                pass
         if not self.recording.is_set():
             return
         done = threading.Event()

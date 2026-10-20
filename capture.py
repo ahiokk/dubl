@@ -328,7 +328,9 @@ class Capture:
 
         stuck = []
         for s in self.sources:
-            s.join(timeout=5)
+            # Если второе устройство не открылось, поток первого так и не стартовал
+            if s.ident is not None:
+                s.join(timeout=5)
             if s.is_alive():
                 stuck.append(s.speaker)
 
