@@ -6,13 +6,12 @@
 anyio==4.14.2
 av==18.1.0
 bottle==0.13.4
-certifi==2026.7.22
+certifi==2026.10.19
 cffi==2.1.0
 click==8.4.2
 clr-loader==0.3.1
 colorama==0.4.6
 ctranslate2==4.8.1
-distlib==0.4.3
 faster-whisper==1.2.1
 filelock==3.32.3
 flatbuffers==25.12.19
@@ -33,13 +32,11 @@ more-itertools==11.1.0
 numpy==2.5.1
 onnxruntime==1.28.0
 packaging==26.2
-platformdirs==4.11.3
 protobuf==7.35.1
 proxy-tools==0.1.0
 pyaudiowpatch==0.2.12.8
 pycparser==3.0
 pygments==2.20.0
-python-discovery==1.5.2
 pythonnet==3.1.0
 pywebview==6.2.1
 pywin32-ctypes==0.2.3
@@ -50,4 +47,3 @@ soxr==1.1.0
 tokenizers==0.23.1
 tqdm==4.70.0
 typing-extensions==4.16.0
-virtualenv==21.7.4
