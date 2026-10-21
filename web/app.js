@@ -78,12 +78,18 @@ function prettyDevice(name) {
     .trim();
 }
 
-function fillSelect(select, items, defaultIndex) {
+/**
+ * Наполняет список устройств. Выбрано то, что названо в wantedName (человек уже
+ * выбирал его раньше), иначе устройство по умолчанию из Windows, иначе первое.
+ */
+function fillSelect(select, items, defaultIndex, wantedName = '') {
   select.innerHTML = '';
+  const wanted = wantedName ? items.find((d) => d.name === wantedName) : null;
+  const chosen = wanted ? wanted.index : defaultIndex;
   for (const d of items) {
     const opt = new Option(prettyDevice(d.name), d.index);
     opt.title = d.name;  // полное имя по наведению, по нему же устройство ищется заново
-    if (d.index === defaultIndex) opt.selected = true;
+    if (d.index === chosen) opt.selected = true;
     select.add(opt);
   }
   select.disabled = !items.length;
@@ -91,14 +97,24 @@ function fillSelect(select, items, defaultIndex) {
 }
 
 const deviceName = (select) => select.selectedOptions[0]?.title || '';
-const hasDevices = (select) => select.options.length && select.options[0].value !== '';
+const hasDevices = (select) => select.options.length > 0 && select.options[0].value !== '';
 
-function store(key, value) {
+/**
+ * Номер устройства для питона. Устройства нет: -1. Number('') это 0, а 0 в Windows
+ * настоящий номер («Microsoft Sound Mapper»): раньше пустой список открывал его.
+ */
+const devIndex = (select) => (hasDevices(select) && select.value !== '' ? Number(select.value) : -1);
+
+// Выбор человека между запусками лежит в настройки.json, не в localStorage:
+// окно работает в приватном режиме, и браузерное хранилище стирается при выходе.
+// Читается при старте окна (get_settings), пишется через api().remember
+let remembered = {};
+
+function remember(key, value) {
+  remembered[key] = value;
   try {
-    if (value === undefined) return localStorage.getItem(key);
-    localStorage.setItem(key, value);
-  } catch { /* хранилище недоступно, запоминать не обязательно */ }
-  return null;
+    Promise.resolve(api().remember(key, value)).catch(() => {});
+  } catch { /* питон ещё не готов, выбор останется только до закрытия окна */ }
 }
 
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -292,12 +308,32 @@ let screen = 'meeting';
 // Порядок разделов: переход едет вправо, если идёшь дальше по списку, и влево, если назад
 const SCREENS = ['meeting', 'interview', 'archive', 'settings'];
 
+// Первый запуск: пока человек не выбрал, с чего начать, на экране выбор, разделы закрыты,
+// а устройства никто не открывает. booted поднимается, когда окно решило, что показывать
+let welcomeOn = false;
+let booted = false;
+
+// Почему в тренажёр нельзя зайти, пока запись встречи не в покое. В starting питон ещё
+// не считает запись идущей (модель грузится минутами), но устройства уже заняты
+const INTERVIEW_LOCKED = {
+  live: 'Сначала останови запись встречи',
+  starting: 'Запись запускается, подожди',
+  stopping: 'Запись ещё останавливается, подожди',
+};
+
 function show(name) {
   if (name === screen) return;
+  if (welcomeOn) return;  // сначала выбор «с чего начать», он ведёт в раздел сам (welcomeChoose)
   if (ivAnswering) { toast('Сначала закончи ответ'); return; }
+  // Ответ расшифровывается или тренировка переходит дальше: питон ещё держит
+  // микрофон и сессию, и уход отсюда оставил бы их без присмотра
+  if (ivBusy) { toast('Подожди, тренажёр ещё занят'); return; }
   // Тренажёру нужен тот же микрофон, что пишет встречу
-  if (name === 'interview' && recording) { toast('Сначала останови запись встречи'); return; }
+  if (name === 'interview' && INTERVIEW_LOCKED[phase]) { toast(INTERVIEW_LOCKED[phase]); return; }
   const forward = SCREENS.indexOf(name) > SCREENS.indexOf(screen);
+  // Проверка микрофона живёт только на экране выбора тренировки. Саундчек после
+  // неё откроется не раньше, чем она закроется (см. syncMonitor)
+  if (screen === 'interview') ivDropMicCheck();
   screen = name;
   closeMenu();
   vt(() => {
@@ -306,6 +342,7 @@ function show(name) {
       else b.removeAttribute('aria-current');
     }
     for (const s of SCREENS) $('screen-' + s).hidden = s !== name;
+    $('screen-welcome').hidden = true;
     paintNavLive();
     if (name === 'meeting') redrawIdleTracks();
   }, forward ? 'next' : 'back');
@@ -314,6 +351,7 @@ function show(name) {
   if (name === 'interview' && !iv.setup.hidden) ivLoadSetup();
   if (name === 'archive') arLoad(ar.search.value);
   if (name === 'settings') stLoad();
+  if (name === 'meeting') refreshAsrReady();
 }
 
 /** Черта под вкладкой переезжает к выбранной, а не появляется рывком. */
@@ -353,8 +391,265 @@ function paintNavLive() {
 
 function paintAsrLabel(label) {
   $('asrOpen').textContent = label || '…';
-  $('ckAsrText').textContent = label || '…';
 }
+
+/**
+ * Строка «Распознавание» под дорожками. Галочка стоит, только когда правда готово:
+ * модель скачана или ключ на месте. Иначе кружок ждёт или краснеет, а в строке
+ * сказано, чего не хватает. a это то, что собрал питон: {state, label, note}.
+ */
+function paintAsrReady(a) {
+  if (!a) return;
+  $('ckAsr').dataset.state = a.state;
+  $('ckAsrText').textContent = a.note ? `${a.label}, ${a.note}` : a.label;
+}
+
+/** Модель могли скачать, пока смотрели другой раздел: строка под дорожками догоняет. */
+function refreshAsrReady() {
+  if (!window.pywebview) return;
+  try {
+    Promise.resolve(api().get_settings()).then((s) => {
+      paintAsrLabel(s.asr_label);
+      paintAsrReady(s.asr);
+      applyModel(s.model);
+      applyGpu(s.gpu);
+    }).catch(() => {});
+  } catch { /* питон ещё не готов: строка останется как была */ }
+}
+
+// ============================================ подготовка модели и ускорение
+
+// Модель скачивается в фоне, пока человек выбирает, с чего начать. Питон присылает ход
+// (ui.modelState), окно рисует его в строке состояния того раздела, где человек сейчас:
+// в записи под состоянием, в тренажёре над банками и под вопросом, в настройках под моделью.
+// Установка CUDA идёт тем же компонентом (.prep) и тем же способом (ui.gpuState)
+let modelInfo = { state: 'idle', done: 0, total: 0, source: 'huggingface', error: '' };
+let gpuInfo = { state: 'none' };
+
+const mb = (bytes) => Math.round(bytes / 1e6);
+
+/** Строка для .prep: «Готовлю распознавание: 120 из 480 МБ». Запасная копия подписана. */
+function modelText(m) {
+  const what = m.source === 'github' ? 'Готовлю распознавание, качаю запасную копию' : 'Готовлю распознавание';
+  return m.total > 0 ? `${what}: ${mb(m.done)} из ${mb(m.total)} МБ` : `${what}: подключаюсь…`;
+}
+
+/** Заготовка .prep: строка, кнопка «Попробовать снова» и тонкая полоса. */
+function buildPrep(host) {
+  host.innerHTML = '<div class="prep-line"><span class="prep-msg"></span>'
+    + '<button type="button" class="link prep-retry" hidden>Попробовать снова</button></div>'
+    + '<div class="prep-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i></i></div>';
+  return host;
+}
+
+/**
+ * Рисует .prep. view это null (спрятать) или {kind: 'loading' | 'error', text, pct, retry}:
+ * pct число от 0 до 100 или null, если сколько осталось, пока неизвестно.
+ */
+function paintPrep(host, view) {
+  host.hidden = !view;
+  if (!view) return;
+  host.dataset.kind = view.kind;
+  const msg = host.querySelector('.prep-msg');
+  msg.textContent = view.text;
+  msg.title = view.title || '';
+  const retry = host.querySelector('.prep-retry');
+  retry.hidden = !view.retry;
+  retry.onclick = view.retry || null;
+  const fill = host.querySelector('.prep-bar i');
+  host.toggleAttribute('data-wait', view.pct === null);
+  fill.style.width = view.pct === null ? '' : `${view.pct}%`;
+  const bar = host.querySelector('.prep-bar');
+  if (view.pct === null) bar.removeAttribute('aria-valuenow');
+  else bar.setAttribute('aria-valuenow', String(Math.round(view.pct)));
+}
+
+const prepHosts = () => ['prepMeeting', 'prepSetup', 'prepAsk', 'prepSettings'].map($);
+
+function retryModel() {
+  try { Promise.resolve(api().model_retry()).catch(() => {}); } catch { /* питон не отвечает */ }
+}
+
+/** Что показать про модель: идёт загрузка, сбой или ничего. */
+function modelView() {
+  const m = modelInfo;
+  if (m.state === 'loading') {
+    return {
+      kind: 'loading', text: modelText(m), retry: null,
+      pct: m.total > 0 ? Math.min(100, (m.done / m.total) * 100) : null,
+    };
+  }
+  if (m.state === 'error') {
+    return { kind: 'error', text: m.error || 'Распознавание не скачалось', pct: 0, retry: retryModel };
+  }
+  return null;
+}
+
+function paintModel() {
+  const view = modelView();
+  // Во время записи подпись «реплик N» важнее: полоса в окне записи уходит
+  const meetingView = phase === 'live' ? null : view;
+  for (const host of prepHosts()) {
+    if (!host.firstElementChild) buildPrep(host);
+    paintPrep(host, host.id === 'prepMeeting' ? meetingView : view);
+  }
+  // В строке состояния полоса занимает место подписи (style.css), поэтому состояние знает о ней
+  $('state').dataset.prep = meetingView ? 'on' : 'off';
+  ivPaintAnswerBtn();
+}
+
+function applyModel(info) {
+  if (!info) return;
+  modelInfo = info;
+  paintModel();
+  if (booted) paintIdleState();  // заголовок записи при сбое загрузки
+}
+
+/** Кнопка ответа в тренажёре ждёт, пока модель скачается: записывать некому. */
+const ivModelBlocks = () => modelInfo.state === 'loading' || modelInfo.state === 'error';
+
+/**
+ * Видеокарта NVIDIA есть, библиотек CUDA нет: предлагаем поставить (около 2 ГБ) и
+ * перезапустить программу. Состояния: offer, installing, restart, error.
+ */
+const boostHosts = () => ({ meeting: $('boostMeeting'), settings: $('boostSettings') });
+let gpuShownSec = -1;
+
+function gpuElapsed() {
+  return gpuInfo.since ? Math.max(0, Date.now() / 1000 - gpuInfo.since) : 0;
+}
+
+function paintBoosts() {
+  const g = gpuInfo;
+  for (const [where, host] of Object.entries(boostHosts())) {
+    if (!host.firstElementChild) {
+      host.innerHTML = '<span class="boost-msg"></span><button type="button" class="btn boost-act"></button>'
+        + '<div class="prep" hidden></div>';
+      buildPrep(host.querySelector('.prep'));
+      host.querySelector('.boost-act').addEventListener('click', gpuAct);
+    }
+    // Во время записи полоса в её окне не нужна, а в настройках она остаётся
+    host.hidden = g.state === 'none' || (where === 'meeting' && phase === 'live');
+    if (host.hidden) continue;
+    host.dataset.state = g.state;
+    const msg = host.querySelector('.boost-msg');
+    const act = host.querySelector('.boost-act');
+    const prep = host.querySelector('.prep');
+    let text = '';
+    let label = '';
+    if (g.state === 'offer') {
+      text = 'Видеокарта NVIDIA найдена, но считает пока процессор.';
+      if (g.after_model) text += ` После ускорения докачается модель, около ${g.after_model}.`;
+      label = `Ускорить на видеокарте, ${g.size || 'около 2 ГБ'}`;
+    } else if (g.state === 'restart') {
+      text = 'Библиотеки CUDA поставлены. Осталось перезапустить программу.';
+      if (g.after_model) text += ` После перезапуска докачается модель, около ${g.after_model}.`;
+      label = 'Перезапустить программу';
+    } else if (g.state === 'error') {
+      // Человеческая фраза от питона красным. Команду для ручной установки и строку самого
+      // установщика (обычно английскую) показываем только там, где есть место
+      text = (g.text || 'Не получилось поставить библиотеки для видеокарты').replace(/[.:!]?\s*$/, '.');
+      // Нет установщика (uv): сказано, что делать, и ни подробностей, ни команды вручную нет
+      if (g.uv === false) {
+        // фраза от питона уже всё объяснила
+      } else if (where === 'settings') {
+        if (g.detail) text += ` Ответ установщика: ${g.detail.replace(/[.:!]?\s*$/, '.')}`;
+        if (g.manual) text += ` Можно поставить вручную, в папке программы: ${g.manual}`;
+      } else {
+        text += ' Подробности в настройках.';
+      }
+      label = g.uv === false ? '' : 'Попробовать снова';
+    }
+    msg.textContent = text;
+    msg.title = g.state === 'error' && g.detail ? g.detail : '';
+    // В настройках про карту и перезапуск уже сказано строкой выше (stPaintHardware): повторять незачем
+    msg.hidden = g.state === 'installing' || (where === 'settings' && g.state !== 'error');
+    act.hidden = !label;
+    act.textContent = label;
+    act.classList.toggle('primary', g.state === 'restart');
+    act.disabled = stLocked();
+    act.title = stLocked() ? 'Сначала останови запись' : '';
+    if (g.state === 'installing') {
+      const sec = Math.floor(gpuElapsed());
+      paintPrep(prep, {
+        kind: 'loading', pct: null, retry: null, title: g.detail || '',
+        text: `${g.text || 'Качаю библиотеки для видеокарты'}, прошло ${clockText(sec)}`,
+      });
+    } else {
+      prep.hidden = true;
+    }
+  }
+}
+
+function applyGpu(info) {
+  if (!info) return;
+  gpuInfo = info;
+  paintBoosts();
+  if (screen === 'settings' && stData) stPaintHardware();
+}
+
+async function gpuAct() {
+  if (gpuInfo.state === 'restart') { restartApp(); return; }
+  for (const host of Object.values(boostHosts())) {
+    const act = host.querySelector('.boost-act');
+    if (act) act.disabled = true;  // двойное нажатие второй установки не запустит
+  }
+  let r;
+  try {
+    r = await api().gpu_install();
+  } catch {
+    r = { error: 'Программа не отвечает, установка не началась' };
+  }
+  if (r.error) toast(r.error, 6000);
+  paintBoosts();
+}
+
+async function restartApp() {
+  // Тренировка посреди: перезапуск её не сохранит, об этом надо сказать до нажатия
+  const midTraining = !iv.ask.hidden || !iv.result.hidden;
+  if (midTraining) {
+    const sure = await ask({
+      title: 'Перезапустить программу?',
+      text: 'Окно закроется и откроется заново. Данные ответы незаконченной тренировки лягут в разборы.',
+      ok: 'Перезапустить',
+    });
+    if (!sure) return;
+  }
+  let r;
+  try {
+    r = await api().restart_app();
+  } catch {
+    r = { error: 'Программа не отвечает, перезапуск не начался' };
+  }
+  if (r.error) { toast(r.error, 6000); return; }
+  toast('Перезапускаю программу…', 10000);
+}
+
+// ==================================================== первый запуск
+
+/** Экран выбора: тренажёр или запись. Пока он на месте, разделы и настройки закрыты. */
+function enterWelcome() {
+  welcomeOn = true;
+  screen = 'welcome';
+  document.body.classList.add('choosing');
+  for (const s of SCREENS) $('screen-' + s).hidden = true;
+  $('screen-welcome').hidden = false;
+  paintModeMark();
+}
+
+/** Выбор сделан: отметка уходит в настройки.json, окно идёт в нужный раздел. */
+function welcomeChoose(target) {
+  if (!welcomeOn) return;
+  welcomeOn = false;
+  document.body.classList.remove('choosing');
+  show(target);
+  try {
+    Promise.resolve(api().first_run_done()).catch(() => {});
+  } catch { /* отметка не сохранилась: выбор покажется ещё раз, ничего страшного */ }
+}
+
+$('chooseTrainer').addEventListener('click', () => welcomeChoose('interview'));
+$('chooseMeeting').addEventListener('click', () => welcomeChoose('meeting'));
 
 // ========================================================= запись встречи
 
@@ -403,11 +698,17 @@ function animateTone(key, from, to, ms) {
 function setPhase(p) {
   phase = p;
   mt.screen.dataset.state = p;
+  // Источники закрыты: до stopped питон уровней не шлёт, и дорожки не должны
+  // светить последним значением
+  if (p === 'stopping') lastLevels = [0, 0];
   const live = p === 'live';
+  // Писать нечем, пока нет ни микрофона, ни наушников
+  const noDevices = !hasDevices(mt.mic) && !hasDevices(mt.spk) && (p === 'idle' || p === 'done');
   mt.record.className = 'btn rec big';
-  mt.record.disabled = p === 'starting' || p === 'stopping';
+  mt.record.disabled = p === 'starting' || p === 'stopping' || noDevices;
+  mt.record.title = noDevices ? 'Подключи микрофон или наушники, список обновится сам' : '';
   mt.recDot.classList.toggle('stop', live);
-  mt.recLabel.textContent = {
+  mt.recLabel.textContent = noDevices ? 'Нет устройств' : {
     idle: 'Начать запись', starting: 'Запускаю…', live: 'Остановить',
     stopping: 'Останавливаю…', done: 'Новая запись',
   }[p];
@@ -419,6 +720,9 @@ function setPhase(p) {
   paintDeviceButtons();
   $('asrOpen').disabled = lock;
   mt.tracks.dataset.tone = p === 'idle' || p === 'starting' ? 'check' : 'live';
+  stPaintLock();  // распознавание на время записи не меняется, и в настройках это видно
+  paintModel();   // полоса загрузки модели на время записи из окна записи уходит
+  paintBoosts();  // кнопка ускорения на время записи закрыта, а в окне записи её нет
   syncMonitor();
 }
 
@@ -434,7 +738,9 @@ const HEARD_ME = 0.04;
 const HEARD_THEM = 0.01;
 
 function monitorWanted() {
-  return screen === 'meeting' && phase === 'idle' && document.visibilityState === 'visible'
+  // booted: пока окно не решило, показывать выбор «с чего начать» или запись, микрофон
+  // не открывается, иначе первый же запуск зажёг бы индикатор раньше, чем человек выбрал
+  return booted && screen === 'meeting' && phase === 'idle' && document.visibilityState === 'visible'
     && (hasDevices(mt.mic) || hasDevices(mt.spk));
 }
 
@@ -446,21 +752,33 @@ function monitorWanted() {
 function syncMonitor(restart = false) {
   monitorQueue = monitorQueue.then(async () => {
     if (!window.pywebview) return;
+    // Проверка микрофона из тренажёра может ещё закрываться (мы только что ушли
+    // оттуда): monitor_start раньше её стопа получил бы «Идёт проверка микрофона»
+    await micCheckQueue;
     const want = monitorWanted();
     if (want && (!monitorOn || restart)) {
       const r = await api().monitor_start(
-        hasDevices(mt.mic) ? Number(mt.mic.value) : -1, hasDevices(mt.spk) ? Number(mt.spk.value) : -1,
-        deviceName(mt.mic), deviceName(mt.spk),
+        devIndex(mt.mic), devIndex(mt.spk), deviceName(mt.mic), deviceName(mt.spk),
       );
-      monitorOn = !(r && r.error);
+      setMonitorOn(!(r && r.error));
       if (r && r.error) paintHeard(r.error);
     } else if (!want && monitorOn) {
-      monitorOn = false;
+      setMonitorOn(false);
       await api().monitor_stop();
       lastLevels = [0, 0];
     }
-  }).catch(() => { monitorOn = false; });
+  }).catch(() => { setMonitorOn(false); });
   return monitorQueue;
+}
+
+/**
+ * Саундчек открыт или закрыт. Строка про индикатор видна, только пока он правда слушает.
+ * Место под ней занято всегда: саундчек на долю секунды закрывается при каждом
+ * перечитывании устройств, и строка, уходящая из потока, дёргала бы всё, что ниже.
+ */
+function setMonitorOn(on) {
+  monitorOn = on;
+  $('monitorNote').dataset.on = String(on);
 }
 
 document.addEventListener('visibilitychange', () => syncMonitor());
@@ -495,14 +813,14 @@ function paintDeviceButtons() {
     // Подпись для экранного диктора: и чья дорожка, и что выбрано
     btn.setAttribute('aria-label', `${role}: ${name}`);
     btn.title = opt ? opt.title : '';
-    btn.disabled = select.disabled;
+    // Пустой список не повод закрывать кнопку: по нажатию он перечитывается,
+    // и подключённое устройство появляется. Закрыта она только на время записи
+    btn.disabled = phase === 'live' || phase === 'starting' || phase === 'stopping';
   }
 }
 
-function openDeviceMenu(select, btn, menu, which) {
-  const open = menu.hidden;
-  closeMenu();
-  if (!open) return;
+/** Строки меню по списку устройств, который сейчас в select. */
+function fillDeviceMenu(select, btn, menu, which) {
   menu.innerHTML = '';
   for (const opt of select.options) {
     const item = document.createElement('button');
@@ -517,16 +835,29 @@ function openDeviceMenu(select, btn, menu, which) {
       btn.focus();
       if (select.value === opt.value) return;
       select.value = opt.value;
-      store(which === 'me' ? 'micName' : 'spkName', opt.title);
+      if (opt.title) remember(which === 'me' ? 'micName' : 'spkName', opt.title);
       paintDeviceButtons();
       resetHeard(which);
       syncMonitor(true);
     });
     menu.appendChild(item);
   }
+}
+
+function openDeviceMenu(select, btn, menu, which) {
+  const open = menu.hidden;
+  closeMenu();
+  if (!open) return;
+  fillDeviceMenu(select, btn, menu, which);
   menu.hidden = false;
   btn.setAttribute('aria-expanded', 'true');
   (menu.querySelector('[aria-selected="true"]') || menu.querySelector('button'))?.focus();
+  // Наушники, подключённые после запуска, появляются в открытом меню
+  refreshDevices().then((changed) => {
+    if (!changed || menu.hidden) return;
+    fillDeviceMenu(select, btn, menu, which);
+    (menu.querySelector('[aria-selected="true"]') || menu.querySelector('button'))?.focus();
+  });
 }
 
 mt.micBtn.addEventListener('click', (e) => {
@@ -538,17 +869,111 @@ mt.spkBtn.addEventListener('click', (e) => {
   openDeviceMenu(mt.spk, mt.spkBtn, mt.spkMenu, 'them');
 });
 
-/** Выбирает устройство, которое человек брал в прошлый раз, если оно на месте. */
-function pickRemembered(select, key) {
-  const name = store(key);
-  const opt = name && [...select.options].find((o) => o.title === name);
-  if (opt) select.value = opt.value;
+// --- список устройств: читается при старте, при открытии меню и при возврате в окно ---
+
+let devSig = '';          // отпечаток последнего списка: перерисовываем, только если он изменился
+let devRefresh = null;    // идущее обновление, второе не запускаем
+let devRefreshedAt = 0;
+
+let devErrorShown = { text: '', at: 0 };
+
+/** Ошибка чтения списка устройств человеку. Одну и ту же не чаще раза в полминуты. */
+function devError(text) {
+  const now = Date.now();
+  if (text === devErrorShown.text && now - devErrorShown.at < 30000) return;
+  devErrorShown = { text, at: now };
+  toast(text, 6000);
 }
+
+/** Подпись состояния до записи: есть ли чем записывать. Не трогает занятые фазы. */
+function paintIdleState() {
+  if (phase !== 'idle') return;
+  const hasMic = hasDevices(mt.mic);
+  const hasSpk = hasDevices(mt.spk);
+  if (!hasMic && !hasSpk) {
+    paintState('Нет устройств для записи', 'error', 'Подключи микрофон или наушники, список обновится сам');
+  } else if (!hasSpk) {
+    paintState('Не нашёл звук собеседника', 'error', 'Проверь, что наушники подключены');
+  } else if (!hasMic) {
+    paintState('Не нашёл микрофон', 'error', 'Подключи его, а звук собеседника пишется и так');
+  } else if (modelInfo.state === 'error') {
+    // Строка под заголовком (ошибка и «Попробовать снова») уже есть, «Готово» рядом с ней врало бы
+    paintState('Распознавание не готово', 'error', '');
+  } else {
+    paintState('Готово к записи', 'idle', 'Пока не начнёшь запись, звук никуда не пишется');
+  }
+}
+
+/**
+ * Кладёт свежий список устройств в списки записи. Выбор человека остаётся, если
+ * его устройство на месте; иначе берётся запомненное, иначе устройство Windows
+ * по умолчанию. Возвращает true, если список изменился.
+ */
+function applyDevices(d) {
+  const sig = JSON.stringify([d.mics, d.loopbacks]);
+  if (sig === devSig) return false;
+  devSig = sig;
+  const micName = deviceName(mt.mic) || remembered.micName || '';
+  const spkName = deviceName(mt.spk) || remembered.spkName || '';
+  fillSelect(mt.mic, d.mics, d.default_mic, micName);
+  fillSelect(mt.spk, d.loopbacks, d.default_loopback, spkName);
+  setPhase(phase);  // кнопка записи, подписи устройств и саундчек под новый список
+  paintHeard();
+  paintIdleState();
+  return true;
+}
+
+/**
+ * Перечитывает устройства и обновляет списки. Идёт в очереди саундчека: питон
+ * на время чтения закрывает его (иначе наушники, подключённые позже, не
+ * появятся), и открывать его заново надо уже по новому списку.
+ */
+function refreshDevices() {
+  if (!window.pywebview) return Promise.resolve(false);
+  if (phase !== 'idle' && phase !== 'done') return Promise.resolve(false);
+  if (devRefresh) return devRefresh;
+  devRefresh = monitorQueue = monitorQueue.then(async () => {
+    const d = await api().get_devices();
+    devRefreshedAt = Date.now();
+    if (d.monitor_closed) { setMonitorOn(false); lastLevels = [0, 0]; }
+    let changed = false;
+    if (d.error) devError(d.error);
+    else changed = applyDevices(d);
+    syncMonitor();  // не ждём: мы внутри очереди саундчека
+    return changed;
+  }).catch(() => false).finally(() => { devRefresh = null; });
+  return devRefresh;
+}
+
+// Вернулись в окно: наушники могли подключить, пока его не было. Саундчек на
+// время чтения закрывается, поэтому слишком частые возвраты пропускаем
+function comeBack() {
+  if (!window.pywebview || Date.now() - devRefreshedAt < 3000) return;
+  if (screen === 'meeting') refreshDevices();
+  else if (screen === 'interview' && !iv.setup.hidden) ivRefreshMics();
+}
+
+window.addEventListener('focus', comeBack);
+// Окно могли свернуть: фокус при этом не всегда приходит, видимость приходит
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') comeBack();
+});
+
+// Пока нет ни одного устройства, ищем их сами: подсказка «список обновится сам»
+// должна быть правдой. Саундчек при этом не открыт, так что читать список дёшево
+setInterval(() => {
+  if (!window.pywebview || document.visibilityState !== 'visible') return;
+  if (screen === 'meeting' && !hasDevices(mt.mic) && !hasDevices(mt.spk)) refreshDevices();
+  else if (screen === 'interview' && !iv.setup.hidden && !hasDevices(iv.mic)) ivRefreshMics();
+}, 4000);
 
 function paintState(text, kind, sub) {
   mt.state.dataset.kind = kind || 'idle';
   mt.stateText.textContent = text;
   mt.stateSub.textContent = sub || '';
+  // Ошибка переносится на несколько строк (см. style.css), а если и там не влезла,
+  // целиком её видно по наведению
+  mt.stateSub.title = kind === 'error' ? (sub || '') : '';
 }
 
 function liveSub() {
@@ -607,25 +1032,46 @@ mt.record.addEventListener('click', async () => {
     return;
   }
   if (phase !== 'idle' && phase !== 'done') return;
+  // Ни микрофона, ни наушников: запись не начнётся (кнопка при этом неактивна)
+  if (!hasDevices(mt.mic) && !hasDevices(mt.spk)) {
+    toast('Нет ни микрофона, ни наушников. Подключи их, список обновится сам');
+    return;
+  }
   setPhase('starting');
   paintState('Запускаю', 'loading', $('asrOpen').textContent);
   // Саундчек должен закрыться раньше, чем откроется запись
   await monitorQueue;
   // Имена шлём вместе с номерами: номера устройств в Windows плавают,
-  // и к моменту записи выбранный номер может указывать на другой вход
-  const res = await api().start(
-    Number(mt.mic.value), Number(mt.spk.value), deviceName(mt.mic), deviceName(mt.spk),
-  );
+  // и к моменту записи выбранный номер может указывать на другой вход.
+  // Нет устройства: -1, питон тогда пишет только то, что есть
+  let res;
+  try {
+    res = await api().start(
+      devIndex(mt.mic), devIndex(mt.spk), deviceName(mt.mic), deviceName(mt.spk),
+    );
+  } catch {
+    res = { error: 'Программа не отвечает, запись не началась' };
+  }
   if (res && res.error) ui.error(res.error);
 });
 
 // Пробел начинает и останавливает запись, пока ничего не печатаешь
+let spaceTaken = false;  // пробел уже стал записью: его отпускание не должно нажать кнопку
 document.addEventListener('keydown', (e) => {
-  if (e.code !== 'Space' || screen !== 'meeting' || typing() || $('dlg').open) return;
+  if (e.code !== 'Space' || screen !== 'meeting' || typing() || $('dlg').open || openMenu()) return;
   const el = document.activeElement;
-  if (el && el !== mt.record && ['BUTTON', 'SUMMARY'].includes(el.tagName)) return;
+  const onButton = el && el !== mt.record && ['BUTTON', 'SUMMARY'].includes(el.tagName);
+  // Пока идёт запись, пробел её останавливает, на какой бы кнопке ни стоял фокус: на
+  // созвоне некогда целиться, а нажатая вместо этого кнопка путей или устройства
+  // оставляла запись идти. Вне записи кнопки сохраняют свой пробел, иначе с клавиатуры
+  // до них не добраться
+  if (onButton && phase !== 'live') return;
   e.preventDefault();
+  spaceTaken = true;
   if (!e.repeat) mt.record.click();
+});
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'Space' && spaceTaken) { e.preventDefault(); spaceTaken = false; }
 });
 
 $('copyPath').addEventListener('click', () => {
@@ -682,7 +1128,7 @@ const ui = {
 
   started(path) {
     recording = true;
-    monitorOn = false;  // питон закрыл саундчек сам, перед тем как открыть запись
+    setMonitorOn(false);  // питон закрыл саундчек сам, перед тем как открыть запись
     currentPath = path;
     lineCount = 0;
     gapCount = 0;
@@ -706,8 +1152,10 @@ const ui = {
     paintToBottom();
   },
 
-  stopped(report) {
+  /** removed: запись оказалась пустой, файл удалён, делиться путём не с чем. */
+  stopped(report, removed) {
     recording = false;
+    if (removed) currentPath = '';
     $('waitFirst').hidden = true;
     document.body.classList.remove('recording');
     lastLevels = [0, 0];
@@ -739,7 +1187,16 @@ const ui = {
       paintState('Запись не началась', 'error', message);
       return;
     }
-    if (phase === 'stopping') setPhase('done');
+    if (phase === 'stopping') {
+      // Остановка сорвалась: записи уже нет, и красный огонёк с часами врать не
+      // должны. В «done» не переходим: питон дошлёт stopped, когда закончит, а до
+      // тех пор следующая запись встала бы за недописанной остановкой
+      recording = false;
+      document.body.classList.remove('recording');
+      paintNavLive();
+      paintState('Запись остановилась с ошибкой', 'error', message);
+      return;
+    }
     toast(message, 6000);
   },
 
@@ -753,6 +1210,9 @@ const ui = {
     ivBanks = banks || [];
     ivSavedThemes = savedThemes || {};
     const fresh = appeared && appeared.length ? appeared[appeared.length - 1] : null;
+    // Банк, который окно само только что сохранило из ответа нейросети, уже выбран и
+    // объявлен тостом: второй раз о нём не говорим
+    if (fresh && fresh === ivJustSaved) { ivJustSaved = ''; ivRenderBanks(); return; }
     // Свежий банк логично сразу и выбрать: за ним и шли
     if (fresh && !iv.setup.hidden) ivSelectBank(fresh);
     else ivRenderBanks();
@@ -760,6 +1220,19 @@ const ui = {
       const b = ivBanks.find((x) => x.file === fresh);
       toast(b ? `Новый банк: ${b.name}` : 'Список банков обновлён');
     }
+  },
+
+  /** Ход загрузки модели распознавания (см. «подготовка модели» выше). */
+  modelState(info) {
+    const was = modelInfo.state;
+    applyModel(info);
+    // Модель скачалась или сорвалась: галочка у «Распознавания» догоняет
+    if (was !== info.state && info.state !== 'loading') refreshAsrReady();
+  },
+
+  /** Ход установки библиотек CUDA для видеокарты. */
+  gpuState(info) {
+    applyGpu(info);
   },
 };
 
@@ -780,7 +1253,9 @@ setInterval(() => {
     if (them) heard.them = true;
     if (me || them) paintHeard();
   }
-  if (recording) {
+  // Часы идут, пока записываешь. С нажатия «Остановить» запись кончилась, а хвост
+  // ещё дописывается: часы стоят на том, сколько записано
+  if (recording && phase === 'live') {
     const passed = (Date.now() - liveStart) / 1000;
     mt.clock.textContent = clockText(passed);
     $('navLiveText').textContent = clockText(passed);
@@ -790,6 +1265,11 @@ setInterval(() => {
     drawLive($('waveCheck'), checkSamples);
   }
   if (ivAnswering) ivTakeTick();
+  // Установка CUDA идёт минуты и подолгу без новых строк: ход показывает время, раз в секунду
+  if (gpuInfo.state === 'installing') {
+    const sec = Math.floor(gpuElapsed());
+    if (sec !== gpuShownSec) { gpuShownSec = sec; paintBoosts(); }
+  }
 }, SAMPLE_MS);
 
 new ResizeObserver(() => {
@@ -814,7 +1294,7 @@ const iv = {
   waveTake: $('waveTake'), takeScale: $('takeScale'),
   verdict: $('ivVerdict'), verdictIcon: $('ivVerdictIcon'), clean: $('ivClean'), attempt: $('ivAttempt'),
   delta: $('ivDelta'), closed: $('ivClosed'), rows: $('ivRows'), theses: $('ivTheses'),
-  text: $('ivText'), followup: $('ivFollowup'),
+  text: $('ivText'), followup: $('ivFollowup'), note: $('ivNote'),
   retry: $('ivRetry'), next: $('ivNext'), finish2: $('ivFinish2'),
 };
 
@@ -824,27 +1304,29 @@ const SOFT_THEMES = ['поведенческий', 'мотивация', 'о с�
 
 const IV_IDLE_HINT = 'Нажми красную кнопку или пробел и говори. Свой текст ты не увидишь, как на настоящем собесе.';
 
-// Запрос, по которому любая нейросеть соберёт банк в нужном формате
-const BANK_PROMPT = `Сделай банк вопросов для тренировки собеседования в формате YAML.
-Ключи строго такие: название, вопросы. У каждого вопроса: id, вопрос,
-категория, уровень (1, 2 или 3), цель_сек ([от, до] в секундах),
-паразитов_макс, тезисы. У каждого тезиса: текст, слова, добить.
-слова это 3-5 корней слов, по которым видно, что тезис прозвучал,
-с обрезанными окончаниями. добить это уточняющий вопрос, если тезис
-не прозвучал. Поведенческие вопросы помечай категорией «поведенческий».
-Ответь только YAML, без пояснений.
-Сделай 15 вопросов под эту вакансию:
-`;
+// Первый заход в тренажёр: пробный собес на три вопроса, строгость «разминка». Дальше
+// банк запоминается (remember), и выбор человека сильнее этого
+const IV_DEFAULT_BANK = 'Пробный собес.yaml';
+// «Рабочий», а не «разминка»: на разминке программа не переспрашивает, а это главное,
+// что стоит увидеть на первом мок-собесе. В пробном собесе все вопросы и так простые
+const IV_DEFAULT_LEVEL = 'рабочий';
+let ivDefaultsApplied = false;
+
+// Запрос для нейросети живёт в питоне (interview.bank_prompt), здесь его нет:
+// окно просит его у питона и копирует. Текст запроса один
+let ivJustSaved = '';    // файл банка, который окно только что сохранило из ответа нейросети
+let ivFixText = '';      // просьба исправить ответ, пока ответ с ошибками
 
 let ivBanks = [];        // банки со списком вопросов, чтобы считать без запросов
 let ivSavedThemes = {};  // выбор тем, запомненный по каждому банку
-let ivBankFile = store('ivBank') || '';
+let ivBankFile = '';     // последний выбранный банк, при старте окна берётся из настроек
 let ivChosen = new Set();
 let ivCustom = false;    // темы выбираются вручную, чипы открыты
 let ivLevels = [];
 let ivLevel = 'рабочий';
 let ivTheses = [];       // тезисы текущего вопроса, чтобы подписать разбор
 let ivAnswering = false;
+let ivTranscribing = false;  // ответ записан, питон его расшифровывает
 let ivBusy = false;
 let ivStarted = 0;
 let ivTarget = null;
@@ -887,9 +1369,26 @@ function ivEstimate(questions) {
 
 // --- банки строками ---
 
+/** Значок «у банка есть замечания»: что программа поправила или пропустила при чтении файла. */
+function bankFlag(problems) {
+  const flag = document.createElement('span');
+  flag.className = 'flag';
+  flag.innerHTML = icon('alert');
+  const shown = problems.slice(0, 8);
+  const more = problems.length - shown.length;
+  flag.title = 'Замечания к банку:\n' + shown.map((p) => `- ${p}`).join('\n') + (more > 0 ? `\nи ещё ${more}` : '');
+  flag.setAttribute('role', 'img');
+  flag.setAttribute('aria-label', `У банка есть замечания: ${problems.length}`);
+  return flag;
+}
+
 function ivRenderBanks() {
   iv.banks.innerHTML = '';
-  if (!ivCurrentBank() && ivBanks.length) ivBankFile = ivBanks[0].file;
+  if (!ivCurrentBank() && ivBanks.length) {
+    // Первый заход или запомненный банк удалили: пробный собес, а если его нет, первый в списке
+    const trial = ivBanks.find((b) => b.file === IV_DEFAULT_BANK && b.count);
+    ivBankFile = (trial || ivBanks[0]).file;
+  }
   for (const b of ivBanks) {
     const on = b.file === ivBankFile;
     const row = document.createElement('button');
@@ -900,7 +1399,11 @@ function ivRenderBanks() {
     row.innerHTML = '<span class="radio"></span><span class="nm"></span><span class="meta"></span>';
     row.children[1].textContent = b.name;
     row.children[1].title = b.name;
-    row.children[2].textContent = b.count ? count(b.count, 'вопрос', 'вопроса', 'вопросов') : 'файл не читается';
+    const meta = row.children[2];
+    if (b.problems && b.problems.length) meta.appendChild(bankFlag(b.problems));
+    const label = document.createElement('span');
+    label.textContent = b.count ? count(b.count, 'вопрос', 'вопроса', 'вопросов') : 'файл не читается';
+    meta.appendChild(label);
     row.addEventListener('click', () => ivSelectBank(b.file));
     iv.banks.appendChild(row);
   }
@@ -917,7 +1420,7 @@ function ivRenderBanks() {
 
 function ivSelectBank(file) {
   ivBankFile = file;
-  store('ivBank', file);
+  remember('ivBank', file);
   ivRestoreThemes();
 }
 
@@ -958,6 +1461,12 @@ function ivRenderThemes() {
     const on = b.dataset.preset === preset;
     b.classList.toggle('on', on);
     b.setAttribute('aria-checked', String(on));
+    // «Поведенческие» или «Технические» в банке, где таких тем нет, выбрали бы пустой
+    // набор, и кнопка молча вернулась бы на «Все»: лучше сразу закрыть её и сказать почему
+    const empty = (b.dataset.preset === 'soft' || b.dataset.preset === 'tech')
+      && (!bank || !ivSet(b.dataset.preset).size);
+    b.disabled = empty;
+    b.title = empty ? 'В этом банке таких тем нет' : '';
   }
   iv.bankNote.textContent = bank ? `в банке ${count(bank.categories.length, 'тема', 'темы', 'тем')}` : '';
 
@@ -988,6 +1497,7 @@ function ivRenderThemes() {
 
 iv.presets.querySelectorAll('button').forEach((b) => {
   b.addEventListener('click', () => {
+    if (b.disabled) return;
     ivCustom = b.dataset.preset === 'custom';
     if (!ivCustom) ivChosen = ivSet(b.dataset.preset);
     ivRenderThemes();
@@ -1027,11 +1537,64 @@ function ivUpdateStart() {
     iv.start.disabled = true;
     return;
   }
+  // Без микрофона отвечать нечем: кнопка неактивна, причина написана рядом с ней.
+  // Пока список устройств не прочитан, про «нет микрофона» молчим
+  const noMic = !hasDevices(iv.mic);
+  iv.start.title = noMic && ivMicsLoaded ? 'Подключи микрофон' : '';
+  if (noMic && ivMicsLoaded) {
+    $('ivSumCount').textContent = 'Нет микрофона';
+    $('ivSumMeta').textContent = 'Подключи его, список обновится сам';
+    iv.start.disabled = true;
+    return;
+  }
   $('ivSumCount').textContent = n ? count(n, 'вопрос', 'вопроса', 'вопросов') : 'Вопросов не осталось';
   $('ivSumMeta').textContent = n
     ? `Строгость «${level ? level.name : ''}», ${ivEstimate(picked)}`
     : 'Сними лишние темы или выбери строгость помягче';
-  iv.start.disabled = n === 0;
+  iv.start.disabled = n === 0 || noMic;
+}
+
+let ivMicsLoaded = false;  // список микрофонов хоть раз прочитан
+let ivMicsSig = '';
+let ivMicsBusy = false;
+
+/**
+ * Перечитывает микрофоны для тренировки. Выбор остаётся, если устройство на
+ * месте: иначе тот, что выбран для записи встречи, запомненный, по умолчанию.
+ * Пока идёт проверка микрофона, не трогаем: она держит устройство, и список
+ * от этого не изменился бы.
+ */
+async function ivRefreshMics() {
+  if (!window.pywebview || ivMicsBusy || micChecking) return false;
+  ivMicsBusy = true;
+  try {
+    const d = await api().get_devices();
+    devRefreshedAt = Date.now();
+    // Чтение списка закрывает саундчек в питоне (см. _do_devices). Если окно успело
+    // открыть его заново (быстро Ctrl+2 и обратно Ctrl+1, пока шла загрузка), здесь он
+    // числится открытым, а в питоне закрыт, и дорожки стоят
+    if (d.monitor_closed) {
+      setMonitorOn(false);
+      lastLevels = [0, 0];
+      syncMonitor();
+    }
+    // Ушли из тренажёра, пока читался список: этот экран ответа больше не ждёт
+    if (screen !== 'interview') return false;
+    if (d.error) { devError(d.error); if (ivMicsLoaded) return false; }
+    const sig = JSON.stringify(d.mics);
+    ivMicsLoaded = true;
+    if (sig === ivMicsSig) { ivUpdateStart(); return false; }
+    ivMicsSig = sig;
+    const wanted = deviceName(iv.mic) || deviceName(mt.mic) || remembered.micName || '';
+    fillSelect(iv.mic, d.mics, d.default_mic, wanted);
+    $('ivCheckMic').disabled = !hasDevices(iv.mic);
+    ivUpdateStart();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    ivMicsBusy = false;
+  }
 }
 
 async function ivLoadSetup() {
@@ -1039,13 +1602,20 @@ async function ivLoadSetup() {
   ivLevels = s.levels || [];
   ivBanks = s.banks || [];
   ivSavedThemes = s.saved_categories || {};
+  if (!ivDefaultsApplied) {
+    ivDefaultsApplied = true;
+    // Первый заход, банк ещё ни разу не выбирали: пробный собес и строгость «рабочий». Выбранный
+    // банк запоминается в настройки.json (ivSelectBank), и тогда эти умолчания молчат
+    if (!remembered.ivBank) {
+      if (ivBanks.some((b) => b.file === IV_DEFAULT_BANK && b.count)) ivBankFile = IV_DEFAULT_BANK;
+      if (ivLevels.some((l) => l.id === IV_DEFAULT_LEVEL)) ivLevel = IV_DEFAULT_LEVEL;
+    }
+  }
   if (!ivLevels.some((l) => l.id === ivLevel)) ivLevel = ivLevels.length ? ivLevels[0].id : 'рабочий';
   ivRenderLevels();
   ivRestoreThemes();
 
-  const d = await api().get_devices();
-  const pick = iv.mic.value !== '' ? iv.mic.value : mt.mic.value;
-  fillSelect(iv.mic, d.mics, pick !== '' ? Number(pick) : d.default_mic);
+  await ivRefreshMics();
   checkSamples = [];
   drawLive($('waveCheck'), checkSamples);
 
@@ -1060,54 +1630,176 @@ async function ivLoadSetup() {
   }
 }
 
-$('ivCopyBankPrompt').addEventListener('click', () => {
-  copyAndSay(BANK_PROMPT, 'Запрос скопирован. Допиши вакансию и вставь в чат с нейросетью');
+// --- свой банк под вакансию: запрос, ответ нейросети, проверка ---
+
+$('ivCopyBankPrompt').addEventListener('click', async () => {
+  let r;
+  try {
+    r = await api().bank_prompt($('ivVacancy').value);
+  } catch {
+    r = { error: 'Программа не отвечает, запрос не получен' };
+  }
+  if (r.error) { toast(r.error, 5000); return; }
+  copyAndSay(r.text, 'Запрос скопирован. Вставь его в чат с нейросетью');
 });
+
+/** Итог проверки под кнопкой: заголовок, список строк и, если банк не принят, просьба исправить. */
+function ivBankResult(kind, head, lines, fix) {
+  const box = $('ivBankResult');
+  box.hidden = !head;
+  box.dataset.kind = kind;
+  $('ivBankResultHead').textContent = head || '';
+  const list = $('ivBankResultList');
+  list.innerHTML = '';
+  for (const text of lines || []) {
+    const li = document.createElement('li');
+    li.textContent = text;
+    list.appendChild(li);
+  }
+  ivFixText = fix || '';
+  $('ivCopyFix').hidden = !ivFixText;
+  // На низком окне итог оказывается под полосой «Начать тренировку»: подводим его в видимую область
+  if (head) box.scrollIntoView({ block: 'nearest' });
+}
+
+$('ivSaveBank').addEventListener('click', async () => {
+  const btn = $('ivSaveBank');
+  btn.disabled = true;
+  let r;
+  try {
+    r = await api().bank_save($('ivReply').value);
+  } catch {
+    r = { ok: false, errors: ['Программа не отвечает, банк не сохранён'] };
+  } finally {
+    btn.disabled = false;
+  }
+  if (!r.ok) {
+    ivBankResult('bad', 'Банк не сохранён. Вот что не так:', r.errors, r.fix);
+    return;
+  }
+  // Банк уже в папке. Список приходит в этом же ответе, выбираем сохранённый и говорим об этом
+  // один раз: слежение за папкой о нём промолчит (ivJustSaved)
+  ivJustSaved = r.file;
+  setTimeout(() => { if (ivJustSaved === r.file) ivJustSaved = ''; }, 8000);
+  ivBanks = r.banks || ivBanks;
+  ivSelectBank(r.file);
+  $('ivReply').value = '';
+  const notes = r.notes || [];
+  ivBankResult('good', notes.length ? 'Банк сохранён и выбран. Что программа поправила:' : '', notes, '');
+  toast(`Банк сохранён: ${r.name}, ${count(r.count, 'вопрос', 'вопроса', 'вопросов')}`, 4000);
+});
+
+$('ivCopyFix').addEventListener('click', () => {
+  if (ivFixText) copyAndSay(ivFixText, 'Просьба скопирована. Вставь её в тот же чат, а новый ответ сюда');
+});
+
 $('ivBanksDir').addEventListener('click', () => api().open_banks_dir());
 
 // --- проверка микрофона до начала ---
 
-$('ivCheckMic').addEventListener('click', async () => {
+const MIC_CHECK_HELP = 'Нажми «Проверить» и скажи пару слов. Дорожка должна ожить.';
+
+// Все действия с проверкой идут по очереди, как у саундчека: питон должен получать
+// их в том порядке, в каком их хотел человек. Иначе уход из раздела мог бы обогнать
+// ещё не вернувшийся старт, и микрофон остался бы открытым
+let micCheckQueue = Promise.resolve();
+const micCheckRun = (op) => (micCheckQueue = micCheckQueue.then(op).catch(() => {}));
+let micCheckPending = false;  // нажатие обработано не до конца: повторное игнорируем
+
+/** Закрывает проверку и показывает вердикт. quiet: просто закрыть, без вердикта. */
+async function ivStopMicCheck(quiet) {
   const btn = $('ivCheckMic');
   const info = $('ivCheckText');
-
-  if (micChecking) {
-    const r = await api().mic_check_stop();
-    micChecking = false;
-    btn.textContent = 'Проверить';
-    if (r.error) { info.textContent = r.error; info.dataset.kind = 'bad'; return; }
-    const ok = r.verdict === 'хорошо';
-    info.dataset.kind = ok ? 'good' : 'bad';
-    info.title = `пик ${r.peak}`;
-    info.textContent = ok
-      ? 'Слышу хорошо, можно начинать.'
-      : 'Слишком тихо, ответы не запишутся. Выбери другой микрофон или подними усиление в настройках.';
+  micChecking = false;
+  btn.textContent = 'Проверить';
+  let r;
+  try {
+    r = await api().mic_check_stop();
+  } catch {
+    r = { error: 'Не удалось закрыть микрофон' };
+  }
+  if (quiet) {
+    info.dataset.kind = '';
+    info.title = '';
+    info.textContent = MIC_CHECK_HELP;
     return;
   }
+  if (r.error) { info.textContent = r.error; info.dataset.kind = 'bad'; return; }
+  const ok = r.verdict === 'хорошо';
+  info.dataset.kind = ok ? 'good' : 'bad';
+  info.title = `пик ${r.peak}`;
+  info.textContent = ok
+    ? 'Слышу хорошо, можно начинать.'
+    : 'Слишком тихо, ответы не запишутся. Выбери другой микрофон или подними усиление в настройках.';
+}
 
-  const r = await api().mic_check_start(Number(iv.mic.value), deviceName(iv.mic));
+async function ivStartMicCheck() {
+  const btn = $('ivCheckMic');
+  const info = $('ivCheckText');
+  if (devIndex(iv.mic) < 0) {
+    info.textContent = 'Микрофон не найден: подключи его, список обновится сам';
+    info.dataset.kind = 'bad';
+    return;
+  }
+  let r;
+  try {
+    r = await api().mic_check_start(devIndex(iv.mic), deviceName(iv.mic));
+  } catch {
+    r = { error: 'Программа не отвечает, микрофон не открылся' };
+  }
   if (r.error) { info.textContent = r.error; info.dataset.kind = 'bad'; return; }
   micChecking = true;
   checkSamples = [];
   info.dataset.kind = '';
   btn.textContent = 'Готово';
   info.textContent = 'Говори обычным голосом…';
+}
+
+$('ivCheckMic').addEventListener('click', () => {
+  // Повторное нажатие, пока ждём питон, не открывает второй захват
+  if (micCheckPending) return;
+  micCheckPending = true;
+  const btn = $('ivCheckMic');
+  btn.disabled = true;
+  micCheckRun(async () => {
+    try {
+      if (micChecking) await ivStopMicCheck(false);
+      else await ivStartMicCheck();
+    } finally {
+      micCheckPending = false;
+      btn.disabled = !hasDevices(iv.mic);
+    }
+  });
 });
+
+/** Тихо закрывает проверку: ушли из раздела или начали тренировку. Ждать можно. */
+function ivDropMicCheck() {
+  return micCheckRun(async () => {
+    if (micChecking) await ivStopMicCheck(true);
+  });
+}
 
 // --- сессия ---
 
 iv.start.addEventListener('click', async () => {
   if (ivBusy) return;
-  if (micChecking) $('ivCheckMic').click();
+  if (devIndex(iv.mic) < 0) { toast('Не выбран микрофон: подключи его, список обновится сам', 5000); return; }
   ivBusy = true;
   iv.start.disabled = true;
-  const r = await api().interview_start(
-    ivBankFile, ivLevel, Number(iv.mic.value), deviceName(iv.mic), [...ivChosen], $('ivShuffle').checked,
-  );
-  ivBusy = false;
-  iv.start.disabled = false;
-  if (r.error) { toast(r.error, 5000); return; }
-  vt(() => ivRenderQuestion(r), 'question');
+  try {
+    // Микрофон проверки должен освободиться до первого ответа
+    await ivDropMicCheck();
+    const r = await api().interview_start(
+      ivBankFile, ivLevel, devIndex(iv.mic), deviceName(iv.mic), [...ivChosen], $('ivShuffle').checked,
+    );
+    if (r.error) { toast(r.error, 5000); return; }
+    vt(() => ivRenderQuestion(r), 'question');
+  } catch {
+    toast('Программа не отвечает, тренировка не началась', 5000);
+  } finally {
+    ivBusy = false;
+    ivUpdateStart();
+  }
 });
 
 function ivPaintPips(p) {
@@ -1137,10 +1829,29 @@ function ivRenderQuestion(payload) {
     bits.push(`Слов-паразитов не больше ${q.fillers_limit}.`);
   }
   iv.target.textContent = bits.join(' ');
+  // Подсказка из банка (поле «заметка»): свёрнутая строка, раскрывается по нажатию
+  const note = (q.note || '').trim();
+  iv.note.hidden = !note;
+  iv.note.open = false;
+  $('ivNoteText').textContent = note;
   ivPendingFollowup = '';
   ivNewTake();
   ivShow(iv.ask);
   ivDrawTake();
+}
+
+/** Кнопка ответа закрыта, пока модель распознавания скачивается или не скачалась. */
+function ivPaintAnswerBtn() {
+  if (ivAnswering || ivTranscribing) return;
+  const wait = ivModelBlocks();
+  const label = !wait ? 'Записать ответ'
+    : modelInfo.state === 'error' ? 'Распознавание не готово' : 'Жду распознавание…';
+  iv.answer.disabled = wait;
+  iv.answer.setAttribute('aria-label', label);
+  iv.answerLabel.textContent = label;
+  iv.hint.textContent = !wait ? IV_IDLE_HINT
+    : modelInfo.state === 'error' ? 'Распознавание не скачалось. Нажми «Попробовать снова» под вопросом.'
+      : 'Распознавание ещё готовится. Кнопка оживёт сама, как только оно будет готово.';
 }
 
 function ivNewTake() {
@@ -1148,9 +1859,7 @@ function ivNewTake() {
   ivTake = { samples: [], maxSec: Math.round(max), target: ivTarget };
   iv.timer.textContent = '0:00';
   iv.timer.classList.remove('over');
-  iv.answer.setAttribute('aria-label', 'Записать ответ');
-  iv.answerLabel.textContent = 'Записать ответ';
-  iv.hint.textContent = IV_IDLE_HINT;
+  ivPaintAnswerBtn();
   iv.skip.hidden = !!ivPendingFollowup;
   paintScale(iv.takeScale, ivTake.maxSec, ivTake.target);
 }
@@ -1174,13 +1883,27 @@ function ivTakeTick() {
 
 async function ivToggleAnswer() {
   if (ivBusy) return;
+  // Модель ещё скачивается (или не скачалась): ответ записывать некому. Кнопка в это время
+  // закрыта, пробел сюда доходит, поэтому говорим словами
+  if (!ivAnswering && ivModelBlocks()) {
+    toast(modelInfo.state === 'error'
+      ? 'Распознавание не готово. Нажми «Попробовать снова» под вопросом'
+      : 'Распознавание ещё готовится, подожди', 4000);
+    return;
+  }
   ivBusy = true;
   iv.answer.disabled = true;
 
   if (!ivAnswering) {
-    const r = ivPendingFollowup
-      ? await api().followup_start(ivPendingFollowup)
-      : await api().answer_start();
+    let r;
+    try {
+      r = ivPendingFollowup
+        ? await api().followup_start(ivPendingFollowup)
+        : await api().answer_start();
+    } catch {
+      r = { error: 'Программа не отвечает, запись ответа не началась' };
+    }
+    // Что бы ни вернулось, кнопка не остаётся неактивной
     ivBusy = false;
     iv.answer.disabled = false;
     if (r.error) { toast(r.error, 5000); return; }
@@ -1197,19 +1920,28 @@ async function ivToggleAnswer() {
   }
 
   ivAnswering = false;
+  ivTranscribing = true;
   document.body.classList.remove('answering');
   ivLastTake = { ...ivTake, samples: ivTake.samples.slice() };
   iv.answerLabel.textContent = 'Расшифровываю…';
   iv.hint.textContent = '';
-  iv.skip.disabled = iv.finish.disabled = false;
+  // «Пропустить» и «Завершить» остаются закрытыми, пока ответ расшифровывается: нажатые
+  // раньше, они клали ответ на следующий вопрос или ломали сессию на последнем
   // Пока идёт расшифровка, по дорожке бежит блик: программа работает, а не зависла
   const timeline = iv.waveTake.parentElement;
   timeline.classList.add('busy');
 
-  const r = await api().answer_stop();
+  let r;
+  try {
+    r = await api().answer_stop();
+  } catch {
+    r = { error: 'Программа не отвечает, ответ не расшифрован' };
+  }
   timeline.classList.remove('busy');
   ivBusy = false;
+  ivTranscribing = false;
   iv.answer.disabled = false;
+  iv.skip.disabled = iv.finish.disabled = false;
   const wasFollowup = !!ivPendingFollowup;
   ivPendingFollowup = '';
   if (r.error) { ivNewTake(); toast(r.error, 5000); ivDrawTake(); return; }
@@ -1249,6 +1981,7 @@ function ivAskFollowup(text) {
   iv.question.textContent = text;
   iv.category.textContent = 'уточнение к ответу';
   iv.target.textContent = 'Скажи коротко и по делу, чего не хватило.';
+  iv.note.hidden = true;  // подсказка принадлежит основному вопросу, не уточнению
   ivTarget = null;
   ivNewTake();
   ivShow(iv.ask);
@@ -1446,8 +2179,16 @@ function ivSummaryRow(row, i) {
 let ivWeakIds = [];
 
 async function ivFinish() {
-  const r = await api().interview_finish();
-  if (r.error) { toast(r.error); return; }
+  // Два нажатия подряд: второй вызов получил бы от питона «сессия не начата»
+  if (ivBusy) return;
+  ivBusy = true;
+  let r;
+  try {
+    r = await api().interview_finish();
+  } catch {
+    r = { error: 'Программа не отвечает, тренировка не сохранена' };
+  }
+  if (r.error) { ivBusy = false; toast(r.error, 5000); return; }
   ivPrompt = r.prompt || '';
   ivPath = r.path || '';
   const saved = !!r.path;
@@ -1455,42 +2196,69 @@ async function ivFinish() {
   ivWeakIds = sum.weak_ids || [];
 
   vt(() => {
-    $('ivDoneTitle').textContent = !saved ? 'Записывать было нечего'
-      : ivWeakIds.length ? 'Тренировка закончена' : 'Все ответы чистые';
-    $('ivDoneText').textContent = saved
-      ? `${count(sum.answered, 'вопрос', 'вопроса', 'вопросов')}, ${count(sum.takes, 'дубль', 'дубля', 'дублей')}. `
-        + `Чисто с последнего дубля: ${sum.clean} из ${sum.answered}.`
-      : 'Ни один ответ не записался. Если ты отвечал вслух, микрофон не пишет. '
-        + 'Проверь, что выбран нужный вход и что он включён в настройках звука Windows.';
+    try {
+      $('ivDoneTitle').textContent = !saved ? 'Записывать было нечего'
+        : ivWeakIds.length ? 'Тренировка закончена' : 'Все ответы чистые';
+      $('ivDoneText').textContent = saved
+        ? `${count(sum.answered, 'вопрос', 'вопроса', 'вопросов')}, ${count(sum.takes, 'дубль', 'дубля', 'дублей')}. `
+          + `Чисто с последнего дубля: ${sum.clean} из ${sum.answered}.`
+        : 'Ни один ответ не записался. Если ты отвечал вслух, микрофон не пишет. '
+          + 'Проверь, что выбран нужный вход и что он включён в настройках звука Windows.';
 
-    const rows = $('ivSumRows');
-    rows.innerHTML = '';
-    sum.rows.forEach((row, i) => rows.appendChild(ivSummaryRow(row, i)));
-    $('ivSummary').hidden = !saved || !sum.rows.length;
+      const rows = $('ivSumRows');
+      rows.innerHTML = '';
+      sum.rows.forEach((row, i) => rows.appendChild(ivSummaryRow(row, i)));
+      $('ivSummary').hidden = !saved || !sum.rows.length;
 
-    $('ivReview').hidden = !saved;
-    $('ivCopyPath').hidden = !saved;
-    $('ivWeak').hidden = !ivWeakIds.length;
-    $('ivWeakText').textContent = `Прогнать слабые ещё раз, ${count(ivWeakIds.length, 'вопрос', 'вопроса', 'вопросов')}`;
-    $('ivCopyPrompt').className = 'btn big' + (ivWeakIds.length ? '' : ' primary');
-    ivShow(iv.done);
+      $('ivReview').hidden = !saved;
+      $('ivCopyPath').hidden = !saved;
+      $('ivWeak').hidden = !ivWeakIds.length;
+      $('ivWeakText').textContent = `Прогнать слабые ещё раз, ${count(ivWeakIds.length, 'вопрос', 'вопроса', 'вопросов')}`;
+      $('ivCopyPrompt').className = 'btn big' + (ivWeakIds.length ? '' : ' primary');
+      ivShow(iv.done);
+    } finally {
+      ivBusy = false;
+    }
   }, 'question');
 }
 
+/**
+ * Переход по тренировке: пропустить вопрос, следующий, ещё дубль. Пока вызов идёт
+ * и пока экран не сменился, ivBusy занят: двойной Enter или двойной клик иначе
+ * пропустили бы вопрос два раза.
+ */
 async function ivGo(call) {
-  const r = await call();
-  if (r.error) { toast(r.error); return; }
-  vt(() => ivRenderQuestion(r), 'question');
+  if (ivBusy) return;
+  ivBusy = true;
+  let r;
+  try {
+    r = await call();
+  } catch {
+    r = { error: 'Программа не отвечает, тренировка не продолжилась' };
+  }
+  if (r.error) { ivBusy = false; toast(r.error, 5000); return; }
+  if (r.finished) { ivBusy = false; ivFinish(); return; }  // ivFinish займёт ivBusy сам
+  // Занято остаётся до смены экрана: переход браузера идёт долю секунды, и кнопки
+  // старого вопроса всё это время ещё нажимаются
+  vt(() => {
+    try { ivRenderQuestion(r); } finally { ivBusy = false; }
+  }, 'question');
 }
 
 // Тот же банк и та же строгость, но только вопросы, где последний дубль не чистый
 $('ivWeak').addEventListener('click', async () => {
   if (!ivWeakIds.length || ivBusy) return;
   ivBusy = true;
-  const r = await api().interview_start(
-    ivBankFile, ivLevel, Number(iv.mic.value), deviceName(iv.mic), [], false, ivWeakIds,
-  );
-  ivBusy = false;
+  let r;
+  try {
+    r = await api().interview_start(
+      ivBankFile, ivLevel, devIndex(iv.mic), deviceName(iv.mic), [], false, ivWeakIds,
+    );
+  } catch {
+    r = { error: 'Программа не отвечает, тренировка не началась' };
+  } finally {
+    ivBusy = false;
+  }
   if (r.error) { toast(r.error, 5000); return; }
   vt(() => ivRenderQuestion(r), 'question');
 });
@@ -1524,9 +2292,10 @@ const ar = {
   notes: $('arNotes'), tail: $('arTail'), more: $('arMore'), menu: $('arMenu'),
 };
 
-// Имя, которое программа даёт файлу сама: «2026-10-01_16-04 расшифровка».
-// В списке оно читается как служебное, а дата и так стоит строкой ниже
-const AR_DEFAULT_NAME = /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}( расшифровка)?$/;
+// Имя, которое программа даёт файлу сама: «2026-10-01_16-04 расшифровка», а если в ту
+// же минуту уже была запись, то «… расшифровка (2)». В списке оно читается как
+// служебное, а дата и так стоит строкой ниже
+const AR_DEFAULT_NAME = /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}( расшифровка)?( \(\d+\))?$/;
 const AR_KIND = { 'встреча': 'Встреча', 'мок-собес': 'Тренировка' };
 const arTitle = (name) => (AR_DEFAULT_NAME.test(name) ? 'Без названия' : name);
 
@@ -1561,13 +2330,43 @@ function arShort(it) {
   return bits.filter(Boolean).join(', ');
 }
 
+/** Заглушка справа, пока запись не выбрана. Пустой архив не должен звать выбрать запись слева. */
+function arPaintEmpty() {
+  const none = !arItems.length;
+  const asked = ar.search.value.trim();
+  $('arEmptyTitle').textContent = !none ? 'Выбери запись слева'
+    : asked ? 'Ничего не нашлось' : 'Записей пока нет';
+  $('arEmptyText').textContent = !none
+    ? 'Здесь лежат расшифровки встреч и разборы тренировок. Поиск ищет по тексту внутри них.'
+    : asked ? 'Попробуй другое слово. Поиск ищет по тексту реплик.'
+      : 'Расшифровки встреч и разборы тренировок появятся здесь после первой записи.';
+}
+
+/** Кладёт текст в элемент и оборачивает найденное в <mark>: в списке видно, почему запись нашлась. */
+function appendMarked(el, text, rx) {
+  el.textContent = '';
+  let last = 0;
+  if (rx) {
+    for (const hit of text.matchAll(rx)) {
+      el.append(text.slice(last, hit.index));
+      const mark = document.createElement('mark');
+      mark.textContent = hit[0];
+      el.append(mark);
+      last = hit.index + hit[0].length;
+    }
+  }
+  el.append(text.slice(last));
+}
+
 function arRender() {
+  arPaintEmpty();
+  const rx = arPattern(ar.search.value);
   const items = arKind === 'все' ? arItems : arItems.filter((i) => i.kind === arKind);
   ar.list.innerHTML = '';
   if (!items.length) {
     const p = document.createElement('p');
     p.className = 'empty-note';
-    p.textContent = ar.search.value
+    p.textContent = ar.search.value.trim()
       ? 'Ничего не нашлось'
       : arItems.length ? 'В этой категории пусто' : 'Записей пока нет';
     ar.list.appendChild(p);
@@ -1587,7 +2386,7 @@ function arRender() {
     if (it.hits && it.hits.length) {
       const h = document.createElement('div');
       h.className = 'hit';
-      h.textContent = it.hits[0];
+      appendMarked(h, it.hits[0], rx);
       btn.appendChild(h);
     }
     btn.addEventListener('click', () => arOpen(it.path));
@@ -1596,7 +2395,8 @@ function arRender() {
 }
 
 async function arLoad(query) {
-  arItems = query ? await api().archive_search(query) : await api().archive_list();
+  const asked = (query || '').trim();
+  arItems = asked ? await api().archive_search(asked) : await api().archive_list();
   arRender();
 }
 
@@ -1629,7 +2429,9 @@ async function arOpen(path) {
   arCurrent = path;
   ar.empty.hidden = true;
   ar.view.hidden = false;
+  // Выжимка прошлой записи не должна ни висеть под новой, ни попадать под подсветку
   ar.digestBox.hidden = true;
+  ar.digestBox.innerHTML = '';
   ar.name.textContent = arTitle(data.name);
   const item = arItems.find((i) => i.path === path);
   ar.meta.textContent = item ? arDescribe(item) : path;
@@ -1668,10 +2470,14 @@ async function arOpen(path) {
 let arMarks = [];
 let arMarkAt = -1;
 
-/** «ё» и «е» в поиске одно и то же: распознавание пишет то так, то так. */
+/**
+ * Как ищет archive.py: регистр не важен, «ё» и «е» одна буква (распознавание пишет
+ * то так, то так), любая череда пробелов и переносов равна одному пробелу.
+ */
 function arPattern(query) {
-  const safe = query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return safe ? new RegExp(safe.replace(/[её]/gi, '[её]'), 'gi') : null;
+  const words = (query || '').trim().split(/\s+/).filter(Boolean)
+    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[её]/gi, '[её]'));
+  return words.length ? new RegExp(words.join('\\s+'), 'gi') : null;
 }
 
 /** Подсвечивает слово из поиска в открытой записи и встаёт на первое совпадение. */
@@ -1684,9 +2490,14 @@ function arHighlight(query) {
   $('arFind').hidden = !rx;
   if (!rx) return;
 
+  // Скрытое (выжимка, пока её не просили, пустой хвост) не подсвечиваем: совпадения
+  // в нём считались бы, а увидеть их нельзя
   const walker = document.createTreeWalker(ar.view, NodeFilter.SHOW_TEXT, {
-    acceptNode: (n) => (n.parentElement.closest('.ar-body, .ar-tail, .ar-digest')
-      ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+    acceptNode: (n) => {
+      const p = n.parentElement;
+      return p && p.closest('.ar-body, .ar-tail, .ar-digest') && !p.closest('[hidden]')
+        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
   });
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
@@ -1807,10 +2618,15 @@ document.querySelectorAll('.ar-filters button').forEach((b) => {
 
 $('arDigest').addEventListener('click', async () => {
   if (!arCurrent) return;
-  const r = await api().archive_digest(arCurrent);
+  const path = arCurrent;
+  const r = await api().archive_digest(path);
   if (r.error) { toast(r.error); return; }
+  if (path !== arCurrent) return;  // пока считалось, открыли другую запись
   arShowDigest(r.digest);
-  toast('Выжимка готова и дописана в файл');
+  // Дописана ли она в файл на самом деле, решает питон: при повторном нажатии, битом
+  // файле или отказе диска «дописана» было бы неправдой
+  if (r.written) toast('Выжимка готова и дописана в файл');
+  else toast(r.note || 'Выжимка готова', 5000);
 });
 
 $('arCopyText').addEventListener('click', async () => {
@@ -1916,11 +2732,12 @@ const st = {
   now: $('stNow'), mode: $('stMode'), modeNote: $('stModeNote'), local: $('stLocal'), api: $('stApi'),
   hardware: $('stHardware'), model: $('stModel'), modelNote: $('stModelNote'),
   provider: $('stProvider'), providerNote: $('stProviderNote'),
-  urlRow: $('stUrlRow'), url: $('stUrl'),
+  urlRow: $('stUrlRow'), url: $('stUrl'), urlNote: $('stUrlNote'), urlHint: $('stUrlHint'),
   apiModel: $('stApiModel'), apiModels: $('stApiModels'),
   folderRow: $('stFolderRow'), folder: $('stFolder'),
   key: $('stKey'), forget: $('stForget'), keysLink: $('stKeysLink'),
-  lang: $('stLang'), test: $('stTest'), result: $('stResult'),
+  lang: $('stLang'), glossary: $('stGlossaryNote'), test: $('stTest'), result: $('stResult'),
+  lock: $('stLock'), patterns: $('stPatterns'), patternsRow: $('stPatternsRow'),
 };
 
 const ST_MODE_NOTE = {
@@ -1931,12 +2748,43 @@ const ST_MODE_NOTE = {
 // Что прислал питон: текущий выбор, варианты, есть ли видеокарта и ключи
 let stData = null;
 let stMode = 'local';
+// Модель запоминается в настройки.json, только если человек выбрал её сам: иначе в файле
+// застряла бы та, что программа подставила, и после установки CUDA не сменилась бы на turbo
+let stModelChosen = false;
 
 const stProvider = () => stData.providers[st.provider.value];
+
+/** Предупреждение про адрес своего сервера: http не на этом компьютере открыт всем в сети. */
+function stUrlWarn(text) {
+  st.urlNote.textContent = text || '';
+  st.urlNote.hidden = !text;
+}
+
+/** Серая подсказка под полем адреса (или красная, kind 'bad'): про само поле, а не про всю форму. */
+function stUrlHint(text, kind) {
+  st.urlHint.textContent = text || '';
+  st.urlHint.dataset.kind = kind || '';
+  st.urlHint.hidden = !text;
+}
+
+// Пока идёт запись (или она запускается и останавливается), питон распознавание не
+// меняет: модель уже в работе. Поля при этом закрыты, а не просто не сохраняются
+const stLocked = () => phase === 'live' || phase === 'starting' || phase === 'stopping';
+
+function stPaintLock() {
+  const lock = stLocked();
+  st.lock.hidden = !lock;
+  const fields = [
+    st.model, st.provider, st.url, st.apiModel, st.folder, st.key, st.forget, st.lang,
+    ...st.mode.querySelectorAll('button'),
+  ];
+  for (const el of fields) el.disabled = lock;
+}
 
 function stResult(text, kind) {
   st.result.textContent = text || '';
   st.result.dataset.kind = kind || '';
+  if (!text) stUrlHint('');  // «сохранено» и смена режима гасят и подсказку про адрес
   paintSaveRow();
 }
 
@@ -1962,16 +2810,50 @@ async function stLoad() {
   st.apiModel.value = c['модель_api'] || stProvider().models[0] || '';
   st.key.value = '';
   stMode = c['режим'];
-  st.hardware.textContent = stData.cuda
-    ? 'Видеокарта NVIDIA найдена, large-v3 успевает за речью.'
-    : 'Видеокарты NVIDIA нет, считать будет процессор. Для живой записи бери small или распознавание через интернет.';
-  st.hardware.dataset.kind = stData.cuda ? 'good' : 'warn';
+  stModelChosen = !!stData.model_chosen;
+  applyGpu(stData.gpu);
+  stPaintHardware();
   st.now.textContent = `сейчас ${stData.label}`;
+  stUrlWarn(stData.url_warning);
+  // Личный глоссарий не прочитался: без него имена и термины распознаются хуже, и это
+  // должно быть видно здесь, а не только в тихом сбое
+  st.glossary.textContent = stData.glossary_note || '';
+  st.glossary.hidden = !stData.glossary_note;
   stResult('');
   stPaint();
+  stPaintLock();
 
   const s = await api().get_settings();
   paintGains(s);
+  // Словари разбора речи, которые не прочитались целиком: одна строка, если они есть
+  st.patterns.textContent = s.patterns_note || '';
+  st.patternsRow.hidden = !s.patterns_note;
+  applyModel(s.model);
+}
+
+/** Строка про железо под выбором модели. Видеокарта без библиотек CUDA, это отдельный случай. */
+function stPaintHardware() {
+  const g = gpuInfo;
+  let text;
+  let kind;
+  if (stData.cuda) {
+    text = 'Видеокарта NVIDIA найдена, большие модели успевают за речью.';
+    kind = 'good';
+  } else if (g.present && g.state === 'restart') {
+    text = 'Библиотеки CUDA поставлены. После перезапуска распознавание пойдёт на видеокарте.';
+    if (g.after_model) text += ` Сначала докачается модель, около ${g.after_model}.`;
+    kind = 'good';
+  } else if (g.present) {
+    text = 'Видеокарта NVIDIA найдена, но библиотек CUDA нет, поэтому считает процессор. '
+      + 'Пока они не стоят, для живой записи бери small или распознавание через интернет.';
+    if (g.after_model) text += ` После ускорения докачается модель, около ${g.after_model}.`;
+    kind = 'warn';
+  } else {
+    text = 'Видеокарты NVIDIA нет, считать будет процессор. Для живой записи бери small или распознавание через интернет.';
+    kind = 'warn';
+  }
+  st.hardware.textContent = text;
+  st.hardware.dataset.kind = kind;
 }
 
 function stPaint() {
@@ -2022,11 +2904,19 @@ function stConfig() {
 
 let stSaveTimer = null;
 let stSavedTimer = null;
+let stDirty = false;  // поменяли, а сохранение ещё не прошло
+let stTypingError = false;  // питон отказал, пока адрес набирали: красным он станет при уходе из поля
 
 function stQueueSave(delay = 0) {
+  stDirty = true;
   clearTimeout(stSaveTimer);
-  stSaveTimer = setTimeout(stSaveNow, delay);
+  stSaveTimer = setTimeout(() => stSaveNow(), delay);
 }
+
+// Адрес своего сервера готов к сохранению, когда в нём есть схема и имя сервера. Остальное
+// (пробелы, логин, «?») проверяет питон. Недописанный адрес не ошибка, пока его набирают
+const stUrlReady = (value) => /^https?:\/\/[^\s/?#@:]+/i.test(value.trim());
+const stIsCustom = () => stMode === 'api' && st.provider.value === 'custom';
 
 /** Короткая отметка «Сохранено» в шапке, чтобы было видно, что кнопка не нужна. */
 function flashSaved() {
@@ -2037,15 +2927,54 @@ function flashSaved() {
   stSavedTimer = setTimeout(() => { s.hidden = true; }, 1800);
 }
 
-async function stSaveNow() {
+/**
+ * final: человек ушёл из поля адреса, с этого момента ошибка настоящая. Пока он набирает
+ * (или адрес ещё пуст после выбора «Свой сервер»), недописанное не сохраняется и не
+ * ругается красным: серая подсказка, что сохранится, когда адрес будет готов.
+ */
+async function stSaveNow(final = false) {
+  stDirty = false;
+  stTypingError = false;
+  // Экран настроек ещё не загрузился: поля пустые, и сохранение записало бы их поверх
+  // настоящих настроек. Загрузка сама заполнит поля тем, что сохранено
+  if (!stData) return;
+  // Запись началась в те доли секунды, что ждали конца набора: питон всё равно
+  // откажет, так что говорим об этом сразу
+  if (stLocked()) { stResult('Идёт запись, это не сохранилось. Остановись и поменяй ещё раз', 'bad'); return; }
+  const custom = stIsCustom();
+  const typed = st.url.value.trim();
+  if (custom && !stUrlReady(typed) && !(final && typed)) {
+    // Про адрес пишем под самим полем: строка «Проверить связь» стоит ниже языка и
+    // на низком окне не видна рядом с пустым полем
+    stResult('');
+    if (final) stUrlHint('Не указан адрес сервера', 'bad');
+    else stUrlHint(typed ? 'Адрес ещё не дописан, сохраню, когда он будет готов' : 'Впиши адрес сервера, и настройка сохранится');
+    return;
+  }
+  stUrlHint('');
   const key = st.key.value;
-  const res = await api().asr_save(stConfig(), key);
-  if (res.error) { stResult(res.error, 'bad'); return; }
+  let res;
+  try {
+    res = await api().asr_save(stConfig(), key, stModelChosen);
+  } catch {
+    res = { error: 'Программа не отвечает, настройка не сохранилась' };
+  }
+  if (res.error) {
+    // Пока в поле адреса печатают, строгая проверка питона только мешает: она станет красной,
+    // когда человек уйдёт из поля или нажмёт «Проверить связь»
+    const typing = custom && !final && document.activeElement === st.url;
+    stTypingError = typing;
+    stResult(res.error, typing ? '' : 'bad');
+    return;
+  }
   stData.keys = res.keys;
   stData.config = stConfig();
+  stData.model_chosen = stModelChosen;
   if (key) st.key.value = '';
   st.now.textContent = `сейчас ${res.label}`;
   paintAsrLabel(res.label);
+  paintAsrReady(res.asr);
+  stUrlWarn(res.url_warning);
   stPaint();
   stResult('');
   flashSaved();
@@ -2061,7 +2990,7 @@ st.mode.querySelectorAll('button').forEach((b) => {
   });
 });
 
-st.model.addEventListener('change', () => { stPaint(); stQueueSave(); });
+st.model.addEventListener('change', () => { stModelChosen = true; stPaint(); stQueueSave(); });
 st.lang.addEventListener('change', () => stQueueSave());
 
 st.provider.addEventListener('change', () => {
@@ -2069,6 +2998,7 @@ st.provider.addEventListener('change', () => {
   // Ключ тоже чужой, отправлять его другому сервису нельзя
   st.apiModel.value = stProvider().models[0] || '';
   st.key.value = '';
+  stUrlWarn('');
   stResult('');
   stPaint();
   stQueueSave();
@@ -2079,6 +3009,13 @@ for (const field of [st.apiModel, st.url, st.folder]) {
   field.addEventListener('input', () => stQueueSave(800));
 }
 
+// Ушёл из поля адреса своего сервера: недописанное теперь ошибка, и сказать о ней пора
+st.url.addEventListener('blur', () => {
+  if (!stIsCustom()) return;
+  clearTimeout(stSaveTimer);
+  if (stDirty || stTypingError || !stUrlReady(st.url.value)) stSaveNow(true);
+});
+
 // Ключ сохраняется, когда ушёл из поля или нажал Enter: по буквам его слать незачем
 st.key.addEventListener('change', () => { if (st.key.value.trim()) stQueueSave(); });
 st.key.addEventListener('keydown', (e) => { if (e.key === 'Enter') st.key.blur(); });
@@ -2086,6 +3023,7 @@ st.key.addEventListener('keydown', (e) => { if (e.key === 'Enter') st.key.blur()
 st.keysLink.addEventListener('click', () => api().open_url(stProvider().keys_url));
 
 st.forget.addEventListener('click', async () => {
+  if (!stData) return; // поставщик и ключи известны только после загрузки настроек
   const sure = await ask({
     title: 'Забыть ключ?',
     text: `Ключ ${stProvider().title} удалится из диспетчера учётных данных Windows.`,
@@ -2093,9 +3031,15 @@ st.forget.addEventListener('click', async () => {
     danger: true,
   });
   if (!sure) return;
-  const res = await api().asr_forget_key(st.provider.value);
-  if (res.error) { toast(res.error); return; }
+  let res;
+  try {
+    res = await api().asr_forget_key(st.provider.value);
+  } catch {
+    res = { error: 'Программа не отвечает, ключ не удалён' };
+  }
+  if (res.error) { toast(res.error, 6000); return; }
   stData.keys = res.keys;
+  paintAsrReady(res.asr);
   stPaint();
   toast('Ключ удалён');
 });
@@ -2103,8 +3047,14 @@ st.forget.addEventListener('click', async () => {
 st.test.addEventListener('click', async () => {
   st.test.disabled = true;
   stResult('Проверяю…');
-  const res = await api().asr_test(stConfig(), st.key.value);
+  let res;
+  try {
+    res = await api().asr_test(stConfig(), st.key.value);
+  } catch {
+    res = { error: 'Программа не отвечает, проверка не прошла' };
+  }
   st.test.disabled = false;
+  stUrlWarn(res.warning);
   if (res.error) stResult(res.error, 'bad');
   else stResult(`Сервер отвечает, ${res.ms} мс на реплику`, 'good');
 });
@@ -2178,6 +3128,12 @@ $('stOpenBanks').addEventListener('click', () => api().open_banks_dir());
 
 // ================================================================ старт
 
+// Файл, брошенный в окно, иначе открылся бы как страница: окно ушло бы на
+// file:// вместе с мостом pywebview, который ставится на любую страницу
+for (const type of ['dragover', 'drop']) {
+  window.addEventListener(type, (e) => e.preventDefault());
+}
+
 setPhase('idle');
 redrawIdleTracks();
 paintModeMark();
@@ -2186,21 +3142,37 @@ document.fonts.ready.then(paintModeMark);
 window.addEventListener('resize', paintModeMark);
 
 window.addEventListener('pywebviewready', async () => {
-  const d = await api().get_devices();
-  fillSelect(mt.mic, d.mics, d.default_mic);
-  fillSelect(mt.spk, d.loopbacks, d.default_loopback);
-  // Если человек в прошлый раз выбрал не то, что Windows считает основным, берём его выбор
-  pickRemembered(mt.mic, 'micName');
-  pickRemembered(mt.spk, 'spkName');
-  const s = await api().get_settings();
-  paintGains(s);
-  paintAsrLabel(s.asr_label);
-  if (!d.loopbacks.length) {
-    paintState('Не нашёл звук собеседника', 'error', 'Проверь, что наушники подключены');
-  } else {
-    paintState('Готово к записи', 'idle', 'Пока не начнёшь запись, звук никуда не пишется');
+  try {
+    // Настройки первыми: запомненный выбор нужен, чтобы выбрать устройства и банк.
+    // Если человек в прошлый раз выбрал не то, что Windows считает основным,
+    // берётся его выбор (applyDevices)
+    const s = await api().get_settings();
+    remembered = s.remembered || {};
+    if (!ivBankFile && remembered.ivBank) ivBankFile = remembered.ivBank;
+    paintGains(s);
+    paintAsrLabel(s.asr_label);
+    paintAsrReady(s.asr);
+    applyModel(s.model);
+    applyGpu(s.gpu);
+    // Первый запуск: сначала выбор «с чего начать». До него саундчек не открывается
+    // (booted ещё ложь), так что индикатор микрофона не загорается сам по себе
+    if (s.first_run) enterWelcome();
+    const d = await api().get_devices();
+    devRefreshedAt = Date.now();
+    if (d.error) devError(d.error);
+    applyDevices(d);
+  } catch {
+    // Без ответа питона нет ни устройств, ни настроек. Сказать об этом надо, а не
+    // оставить окно с мёртвой кнопкой и без объяснений
+    paintState('Программа не отвечает', 'error', 'Закрой окно и открой его заново');
   }
+  document.body.classList.remove('boot');
+  if (welcomeOn) $('chooseTrainer').focus();  // скрытое не фокусируется, поэтому после boot
+  booted = true;
   setPhase('idle');
   paintHeard();
   redrawIdleTracks();
 });
+
+// Мост не поднялся: окно всё равно не должно остаться пустым, пока ждёт настройки
+setTimeout(() => document.body.classList.remove('boot'), 5000);

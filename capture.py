@@ -51,17 +51,32 @@ class Segment:
 
 
 def list_devices() -> dict:
-    """Возвращает описание доступных устройств и разумные значения по умолчанию."""
+    """Возвращает описание доступных устройств и разумные значения по умолчанию.
+
+    Зовётся только из потока устройств (в app.py это _audio_loop): PortAudio не
+    переносит обращений из разных потоков. И ещё одно: он читает список
+    устройств при первой инициализации и держит его, пока жив хоть один
+    PyAudio. Свежий список получится, только если все остальные захваты
+    закрыты.
+    """
     p = pa.PyAudio()
     try:
         wasapi = p.get_host_api_info_by_type(pa.paWASAPI)
-        default_out = p.get_device_info_by_index(wasapi["defaultOutputDevice"])
 
+        # Устройства вывода по умолчанию может не быть вовсе (все наушники и
+        # колонки отключены). Микрофоны от этого списка не пропадают: просто нет
+        # звука собеседника по умолчанию
         loopback = None
-        for d in p.get_loopback_device_info_generator():
-            if default_out["name"] in d["name"]:
-                loopback = d
-                break
+        default_out_name = ""
+        try:
+            default_out = p.get_device_info_by_index(wasapi["defaultOutputDevice"])
+            default_out_name = default_out["name"]
+            for d in p.get_loopback_device_info_generator():
+                if default_out_name in d["name"]:
+                    loopback = d
+                    break
+        except Exception:
+            loopback = None
 
         inputs, loopbacks = [], []
         for i in range(p.get_device_count()):
@@ -77,7 +92,7 @@ def list_devices() -> dict:
             "loopbacks": loopbacks,
             "default_mic": wasapi["defaultInputDevice"],
             "default_loopback": loopback["index"] if loopback else None,
-            "default_output_name": default_out["name"],
+            "default_output_name": default_out_name,
         }
     finally:
         p.terminate()
@@ -195,6 +210,7 @@ class AudioSource(threading.Thread):
         out_queue: "queue.Queue[Segment]",
         session_start: float,
         on_level=None,
+        on_error=None,
     ) -> None:
         super().__init__(daemon=True, name=f"capture-{speaker}")
         self.stream = stream
@@ -205,6 +221,8 @@ class AudioSource(threading.Thread):
         self.out_queue = out_queue
         self.session_start = session_start
         self.on_level = on_level
+        # Зовётся один раз из этого потока, если чтение оборвалось не по нашей команде
+        self.on_error = on_error
         self.stop_event = threading.Event()
         self.error: Exception | None = None
         # Программное усиление: тихий вход можно вытянуть, не трогая настройки Windows.
@@ -213,6 +231,7 @@ class AudioSource(threading.Thread):
 
     def run(self) -> None:
         stream, rate, channels, chunk = self.stream, self.rate, self.channels, self.chunk
+        splitter = None
         try:
             resampler = soxr.ResampleStream(rate, TARGET_RATE, 1, dtype="float32", quality="HQ")
             splitter = _VoiceSplitter()
@@ -246,12 +265,30 @@ class AudioSource(threading.Thread):
                         self._emit(result)
                 tail = tail[n * FRAME_LEN :]
 
+        except Exception as exc:  # поток не должен ронять всё приложение молча
+            self.error = exc
+        finally:
+            # Недоговорённую реплику отдаём и при штатной остановке, и при сбое
+            # чтения (выдернули наушники): иначе последние секунды речи пропадают
+            self._flush(splitter)
+
+        # Сбой при остановке (устройство закрывают под нами) не новость, а вот
+        # обрыв посреди записи окну знать нужно: иначе оно так и пишет «Идёт запись»
+        if self.error is not None and not self.stop_event.is_set() and self.on_error is not None:
+            try:
+                self.on_error(self.speaker, self.error)
+            except Exception:
+                pass
+
+    def _flush(self, splitter) -> None:
+        if splitter is None:
+            return
+        try:
             leftover = splitter.flush()
             if leftover is not None:
                 self._emit(leftover)
-
-        except Exception as exc:  # поток не должен ронять всё приложение молча
-            self.error = exc
+        except Exception:
+            pass  # поток уже умирает, второй сбой поверх первого ничего не добавит
 
     def _emit(self, result) -> None:
         audio, start_time = result
@@ -273,12 +310,14 @@ class Capture:
 
     PortAudio нельзя инициализировать из нескольких потоков одновременно: два
     параллельных `PyAudio()` роняют процесс без traceback. Поэтому устройства
-    открываются здесь, в главном потоке, а потокам захвата остаётся только чтение.
+    открываются здесь, в одном потоке (в app.py это поток устройств, и список
+    устройств читается там же), а потокам захвата остаётся только чтение.
     """
 
     def __init__(self) -> None:
         self._pa = pa.PyAudio()
         self.sources: list[AudioSource] = []
+        self._closed = False
 
     def add(
         self,
@@ -287,6 +326,7 @@ class Capture:
         out_queue: "queue.Queue[Segment]",
         session_start: float,
         on_level=None,
+        on_error=None,
     ) -> AudioSource:
         info = self._pa.get_device_info_by_index(device_index)
         rate = int(info["defaultSampleRate"])
@@ -302,7 +342,8 @@ class Capture:
             frames_per_buffer=chunk,
         )
         src = AudioSource(
-            stream, rate, channels, chunk, speaker, out_queue, session_start, on_level
+            stream, rate, channels, chunk, speaker, out_queue, session_start,
+            on_level, on_error,
         )
         self.sources.append(src)
         return src
@@ -321,27 +362,45 @@ class Capture:
         """Останавливает захват. Возвращает имена источников, которые не завершились.
 
         Закрывать устройство под живым читающим потоком нельзя: PortAudio уронит
-        процесс без traceback. Поэтому зависший источник просто оставляем ОС.
+        процесс без traceback. Поэтому зависший источник просто оставляем ОС, но
+        здоровые рядом с ним закрываются всё равно: иначе вместе с одним
+        зависшим дорожка, которая работала, оставалась бы открытой до выхода.
         """
+        if self._closed:
+            return []
+        self._closed = True
+
         for s in self.sources:
             s.stop()
 
+        # Один общий срок на всех: у зависшего источника ждать пять секунд, и у
+        # его соседа ещё пять, незачем
+        deadline = time.monotonic() + 5
         stuck = []
         for s in self.sources:
             # Если второе устройство не открылось, поток первого так и не стартовал
             if s.ident is not None:
-                s.join(timeout=5)
+                s.join(timeout=max(0.0, deadline - time.monotonic()))
             if s.is_alive():
                 stuck.append(s.speaker)
 
-        if stuck:
-            return stuck
-
         for s in self.sources:
+            if s.is_alive():
+                continue  # под читающим потоком поток звука не трогаем
             try:
                 s.stream.stop_stream()
+            except Exception:
+                pass
+            try:
                 s.stream.close()
             except Exception:
                 pass
-        self._pa.terminate()
-        return []
+
+        # Terminate закрывает и все оставшиеся потоки PortAudio, в том числе
+        # зависший под живым читателем, поэтому при зависшем источнике его не зовём
+        if not stuck:
+            try:
+                self._pa.terminate()
+            except Exception:
+                pass
+        return stuck

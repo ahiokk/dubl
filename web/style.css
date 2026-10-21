@@ -139,7 +139,7 @@ p { margin: 0; }
   stroke-linejoin: round;
 }
 
-:where(button, input, select, summary, [tabindex]):focus-visible {
+:where(button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
@@ -312,6 +312,23 @@ select { cursor: pointer; }
 select:hover:not(:disabled), input:hover { border-color: var(--line-strong); }
 select:disabled { opacity: 0.6; cursor: default; }
 
+/* Длинный текст: вакансия и ответ нейросети. Те же рамка и радиус, что у полей */
+textarea {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-sm);
+  line-height: 1.45;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  resize: vertical;
+  user-select: text;
+}
+textarea:hover { border-color: var(--line-strong); }
+
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
@@ -356,8 +373,9 @@ input[type="range"]::-webkit-slider-thumb {
   border-left: 1px solid var(--line);
 }
 .seg button:first-child { border-left: none; }
-.seg button:hover { color: var(--ink); background: var(--fill); }
+.seg button:hover:not(:disabled) { color: var(--ink); background: var(--fill); }
 .seg button.on { background: var(--ink); color: var(--on-ink); }
+.seg button:disabled { opacity: 0.45; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .chip {
@@ -599,6 +617,15 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .state[data-kind="live"] .state-text { color: var(--rec); }
 .state[data-kind="error"] .state-text, .state[data-kind="error"] .state-sub { color: var(--rec); }
+/* Ошибка говорит, что случилось и что делать: в одну строку с многоточием на 40
+   знаках это не прочесть. Переносится до четырёх строк, остальное по наведению */
+.state[data-kind="error"] .state-sub {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .state[data-kind="done"] .state-text, .state[data-kind="ready"] .state-text { color: var(--me); }
 
 /* Часы записи крупно: на созвоне в окно смотрят урывками */
@@ -619,7 +646,9 @@ body.recording #record .dot-rec { animation: lamp 1.6s ease-in-out infinite; }
 /* --- лист: до записи пояснение, во время записи стенограмма --- */
 
 .sheet { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; }
-.feed { overflow-y: auto; padding: 22px 18px 48px; scroll-behavior: smooth; }
+/* Без scroll-behavior: smooth. Плавная прокрутка к низу не успевала за потоком реплик,
+   по пути scroll видел отрыв от конца и выключал автопрокрутку */
+.feed { overflow-y: auto; padding: 22px 18px 48px; }
 
 /* Саундчек: колонка начинается там же, где дорожки, чтобы строки
    готовности читались как подписи к ним */
@@ -628,6 +657,10 @@ body.recording #record .dot-rec { animation: lamp 1.6s ease-in-out infinite; }
 .intro .lead { margin-top: 8px; font-size: var(--t-md); color: var(--ink-2); max-width: 50ch; }
 .intro .hint { display: flex; gap: 10px; align-items: flex-start; margin-top: 26px; font-size: var(--t-sm); color: var(--ink-2); max-width: 56ch; }
 .intro .hint .ic { margin-top: 1px; }
+/* Что делает саундчек: слушает только ради индикатора. Видна, пока он правда открыт,
+   а место держит и тогда, когда закрыт (visibility, не hidden): иначе строка ниже прыгает */
+.intro .monitor-note { margin-top: 18px; max-width: 56ch; font-size: var(--t-sm); }
+.intro .monitor-note[data-on="false"] { visibility: hidden; }
 
 .ready { margin: 24px 0 0; padding: 0; list-style: none; max-width: 560px; border-top: 1px solid var(--line); }
 .ready li {
@@ -781,11 +814,38 @@ body.recording #record .dot-rec { animation: lamp 1.6s ease-in-out infinite; }
 .bank .nm { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bank .meta { font-size: var(--t-sm); color: var(--ink-2); white-space: nowrap; }
 .bank.broken .nm { color: var(--rec); }
+/* Банк прочитался, но с замечаниями: значок рядом с числом вопросов, подробности по наведению */
+.bank .meta { display: inline-flex; align-items: center; gap: 8px; }
+.bank .flag { display: inline-grid; place-items: center; color: var(--warn); cursor: help; }
+.bank .flag .ic { width: 16px; height: 16px; }
 
 .own { margin-top: 10px; }
 .own-box { margin-top: 10px; padding: 14px 16px; background: var(--fill); border-radius: var(--r-box); }
 .own-box p { font-size: var(--t-sm); color: var(--ink-2); max-width: 60ch; margin-bottom: 12px; }
-.own-box .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.own-box .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.own-label { display: block; margin: 16px 0 6px; font-size: var(--t-sm); font-weight: 600; }
+.own-box > p + .own-label { margin-top: 4px; }
+.own-label small { margin-left: 8px; font-size: var(--t-xs); font-weight: 400; color: var(--ink-2); }
+
+/* Что вышло из ответа нейросети: сохранён банк или список ошибок */
+.bank-result {
+  margin-top: 14px;
+  padding: 10px 14px;
+  font-size: var(--t-sm);
+  background: var(--paper);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 0 var(--r-box) var(--r-box) 0;
+  /* scrollIntoView при появлении итога не должен оставлять его под полосой «Начать тренировку» */
+  scroll-margin-bottom: 104px;
+}
+.bank-result[data-kind="good"] { border-left-color: var(--me); }
+.bank-result[data-kind="bad"] { border-left-color: var(--rec); }
+.own-box .bank-result p { max-width: none; margin: 0; font-weight: 600; color: var(--ink); }
+.own-box .bank-result[data-kind="bad"] p { color: var(--rec); }
+.bank-result ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); user-select: text; }
+.bank-result li { margin-top: 3px; }
+.bank-result ul:empty { display: none; }
+.bank-result .btn { margin-top: 12px; }
 
 .level-desc { margin-top: 10px; font-size: var(--t-sm); color: var(--ink-2); }
 
@@ -844,6 +904,12 @@ body.recording #record .dot-rec { animation: lamp 1.6s ease-in-out infinite; }
 .question { margin-top: 8px; font-size: 30px; line-height: 1.25; user-select: text; }
 #ivTarget { margin-top: 10px; color: var(--ink-2); }
 
+/* Подсказка к вопросу: свёрнутая строка, раскрывается по нажатию */
+.note-hint { margin-top: 14px; max-width: 60ch; }
+.note-hint summary { width: fit-content; font-size: var(--t-sm); font-weight: 600; color: var(--ink-2); cursor: pointer; }
+.note-hint summary:hover, .note-hint[open] summary { color: var(--ink); }
+.note-hint p { margin-top: 6px; padding-left: 14px; border-left: 3px solid var(--line-strong); font-size: var(--t-sm); user-select: text; }
+
 /* Шкала дубля: зелёная дорожка растёт слева направо, серое окно это цель
    по времени, всё после неё красное */
 .timeline { position: relative; margin-top: 34px; }
@@ -882,6 +948,7 @@ body.recording #record .dot-rec { animation: lamp 1.6s ease-in-out infinite; }
   box-shadow: 0 0 0 6px var(--rec-soft);
   transition: transform var(--fast) var(--ease);
 }
+.rec-round:disabled { opacity: 0.45; }
 .rec-round:hover:not(:disabled) { transform: scale(1.04); }
 .rec-round:active:not(:disabled) { transform: scale(0.96); }
 .rec-round .dot-rec { width: 24px; height: 24px; }
@@ -1087,15 +1154,18 @@ body.answering .rec-round { animation: ring 1.6s var(--ease) infinite; }
 
 .ar-main { min-height: 0; overflow-y: auto; }
 
-.empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 40px; text-align: center; }
-.empty .art { width: 220px; height: 150px; margin-bottom: 18px; }
-.empty h2 { font-size: var(--t-lg); }
-.empty p { margin-top: 6px; color: var(--ink-2); max-width: 40ch; }
+/* Заглушка архива. Не просто .empty: тем же словом названо состояние чипа темы без
+   вопросов (.chip.empty), и правило без родителя превращало его в колонку 120 px */
+.ar-main > .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 40px; text-align: center; }
+.ar-main > .empty .art { width: 220px; height: 150px; margin-bottom: 18px; }
+.ar-main > .empty h2 { font-size: var(--t-lg); }
+.ar-main > .empty p { margin-top: 6px; color: var(--ink-2); max-width: 40ch; }
 
 .ar-view { padding: 26px 28px 48px; }
 .ar-view.enter { animation: fade-in 220ms var(--ease); }
 .ar-head h1 { font-size: var(--t-xl); overflow-wrap: anywhere; }
-.ar-head span { display: block; margin-top: 4px; font-size: var(--t-sm); color: var(--ink-2); }
+/* Только подпись под именем. Просто «span» задевал и строку поиска .find внутри шапки */
+.ar-head > span { display: block; margin-top: 4px; font-size: var(--t-sm); color: var(--ink-2); }
 .ar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
 
 /* Найденное поиском: где стоишь сейчас и стрелки к соседним совпадениям */
@@ -1232,6 +1302,7 @@ mark.now {
 #stResult { font-size: var(--t-sm); color: var(--ink-2); }
 #stResult[data-kind="good"] { color: var(--me); }
 #stResult[data-kind="bad"] { color: var(--rec); }
+#stUrlHint[data-kind="bad"] { color: var(--rec); }
 
 /* ================================================================ диалог */
 
@@ -1273,6 +1344,100 @@ mark.now {
 }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 10px); } }
 
+/* ===================================================== быстрый старт
+
+   Первый запуск, подготовка модели и ускорение на видеокарте. Всё из токенов выше,
+   новых цветов и размеров здесь нет. */
+
+/* Пока окно не получило настройки, оно не знает, какой раздел показать: не мигаем не тем */
+body.boot .main { visibility: hidden; }
+
+/* Выбор «с чего начать» стоит один на экране: вкладок и настроек не видно, пока человек
+   не выбрал. Место они держат, чтобы шапка не прыгала после выбора */
+body.choosing .modes,
+body.choosing .asr-chip,
+body.choosing .icon-btn,
+body.choosing .live-chip { visibility: hidden; }
+
+/* Выбор стоит один на экране, поэтому по центру окна, а не у левого края, как рабочие
+   страницы. Поля auto в flex центрируют по обеим осям, а в низком окне сами обнуляются,
+   и верх не уезжает за край прокрутки */
+#screen-welcome:not([hidden]) { display: flex; }
+.page.welcome { width: 100%; margin: auto; padding: 32px; }
+.welcome .page-head { justify-content: center; text-align: center; }
+.welcome .page-head p { margin-inline: auto; }
+.choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.welcome .choice { align-items: center; text-align: center; }
+.welcome .choice .art { margin: 0 0 14px; }
+
+/* Крупный вариант: линейный рисунок, название, подпись. Наведение меняет только
+   рамку и подложку, как у обычной кнопки */
+.choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 22px 22px 24px;
+  text-align: left;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-box);
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.choice:hover { background: var(--fill); border-color: var(--line-strong); }
+.choice .art { display: block; width: 132px; height: 96px; margin: 0 0 14px -4px; }
+/* Рисунок микрофона с наушниками обрезан до одного микрофона: под ним подпись «Наушники не
+   нужны». Правая половина картинки (наушники) за краем маски */
+.choice .art.solo {
+  width: 42px;
+  -webkit-mask-size: auto 100%;
+  mask-size: auto 100%;
+  -webkit-mask-position: left center;
+  mask-position: left center;
+}
+.choice b { font-size: var(--t-lg); font-weight: 650; letter-spacing: -0.01em; line-height: 1.25; }
+.choice > span:last-child { max-width: 34ch; font-size: var(--t-sm); color: var(--ink-2); }
+
+/* Полоса подготовки: строка и тонкая полоса под ней. Тем же компонентом идут загрузка
+   модели и установка библиотек CUDA. Известно, сколько скачано, полоса растёт; неизвестно,
+   по ней ходит светлый отрезок */
+.prep { min-width: 0; max-width: 460px; font-size: var(--t-sm); line-height: 1.35; color: var(--ink-2); }
+.prep-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.prep-msg { min-width: 0; overflow-wrap: anywhere; }
+.prep-bar { height: 3px; margin-top: 6px; overflow: hidden; background: var(--line); border-radius: 2px; }
+.prep-bar i { display: block; width: 0; height: 100%; background: var(--ink); border-radius: 2px; transition: width 260ms var(--ease); }
+.prep[data-wait] .prep-bar i { width: 36%; animation: prep-slide 1.5s var(--ease) infinite; }
+@keyframes prep-slide { from { transform: translateX(-100%); } to { transform: translateX(280%); } }
+/* Без анимации отрезок в 36 % выглядел бы настоящим прогрессом: вместо него бледная полоса целиком */
+@media (prefers-reduced-motion: reduce) {
+  .prep[data-wait] .prep-bar i { width: 100%; opacity: 0.35; animation: none; }
+}
+.prep .link { font-size: var(--t-sm); }
+.prep[data-kind="error"] { color: var(--rec); }
+.prep[data-kind="error"] .prep-bar { display: none; }
+.prep[data-kind="error"] .link { color: var(--ink); }
+.prep-page { margin-bottom: 18px; }
+#prepAsk { margin-top: 14px; }
+/* В строке состояния полоса занимает место подписи под текстом: окно не растёт.
+   Ошибка устройства свою подпись оставляет, она важнее */
+.state[data-prep="on"]:not([data-kind="error"]) .state-sub { display: none; }
+.state .prep { margin-top: 3px; }
+
+/* Предложение ускорить распознавание на видеокарте: одна строка под строкой состояния
+   и такая же в настройках модели */
+.boost { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-width: 0; font-size: var(--t-sm); color: var(--ink-2); }
+.top { background: var(--chrome); }
+.top > .boost { padding: 0 18px 12px; }
+.row-field > .boost { margin-top: 12px; }
+.boost-msg { min-width: 0; overflow-wrap: anywhere; }
+.boost[data-state="error"] .boost-msg { color: var(--rec); }
+.boost .btn { height: 32px; }
+.boost .prep { flex: 1 1 280px; }
+.row-field > .prep { margin-top: 12px; }
+
+/* Строка подсказки в начале ряда не отступает от подписи */
+.row-field > .hw:first-child { margin-top: 0; }
+
 /* ============================================================ узкое окно */
 
 @media (max-width: 1000px) {
@@ -1292,4 +1457,9 @@ mark.now {
   .measures { grid-template-columns: 1fr; }
   .measure + .measure { padding-left: 0; border-left: none; border-top: 1px solid var(--line); }
   .intro { padding-left: 0; }
+}
+
+/* Окно уже 860 px не бывает, это страховка для узких экранов: два варианта встают в столбик */
+@media (max-width: 700px) {
+  .choices { grid-template-columns: 1fr; }
 }

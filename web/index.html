@@ -2,11 +2,17 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<!-- Окно ходит только к себе: ни чужих скриптов, ни фреймов, ни отправки форм.
+     'unsafe-eval' не нужен: мост pywebview внедряется через ExecuteScript, и
+     CSP страницы на этот код не действует, хотя заглушки window.pywebview.api
+     он собирает через new Function (проверено на живом окне 20.10.2026).
+     Инлайн-скрипты и обработчики в атрибутах под запретом. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'">
 <meta name="color-scheme" content="light dark">
 <title>Дубль</title>
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="boot">
 
 <!-- Значки в одном стиле: контур 1.75, скругления как у Lucide -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -55,26 +61,55 @@
 
 <main class="main">
 
+  <!-- ===================================================== первый запуск -->
+  <section id="screen-welcome" class="screen scroll" hidden>
+    <div class="page welcome">
+      <header class="page-head">
+        <div>
+          <h1>С чего начнём?</h1>
+          <p>Дубль записывает созвоны и тренирует собеседования. Выбери, что нужно сейчас,
+            второе найдётся во вкладках сверху.</p>
+        </div>
+      </header>
+      <div class="choices">
+        <button id="chooseTrainer" class="choice">
+          <span class="art solo" style="--src:url(img/line-mic.webp)" aria-hidden="true"></span>
+          <b>Потренировать собеседование</b>
+          <span>Наушники не нужны, хватит микрофона.</span>
+        </button>
+        <button id="chooseMeeting" class="choice">
+          <span class="art" style="--src:url(img/line-reel.webp)" aria-hidden="true"></span>
+          <b>Записать созвон</b>
+          <span>Нужны наушники: тебя слышит микрофон, собеседника программа ловит из наушников, так реплики не путаются.</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
   <!-- ============================================================ запись -->
   <section id="screen-meeting" class="screen" data-state="idle">
 
-    <div class="transport">
-      <button id="record" class="btn rec big">
-        <span id="recDot" class="dot-rec"></span><span id="recLabel">Начать запись</span>
-      </button>
-      <div id="clock" class="clock" hidden>0:00</div>
-      <div id="state" class="state" data-kind="idle" role="status" aria-live="polite">
-        <span id="stateText" class="state-text">Готово к записи</span>
-        <span id="stateSub" class="state-sub"></span>
-      </div>
-      <div id="fileActions" class="transport-end" hidden>
-        <button id="copyPath" class="btn" title="Путь к файлу расшифровки, чтобы отдать его агенту">
-          <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Путь к файлу
+    <div class="top">
+      <div class="transport">
+        <button id="record" class="btn rec big">
+          <span id="recDot" class="dot-rec"></span><span id="recLabel">Начать запись</span>
         </button>
-        <button id="openDir" class="btn icon" title="Открыть папку с записями" aria-label="Открыть папку с записями">
-          <svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>
-        </button>
+        <div id="clock" class="clock" hidden>0:00</div>
+        <div id="state" class="state" data-kind="idle" role="status" aria-live="polite">
+          <span id="stateText" class="state-text">Готово к записи</span>
+          <span id="stateSub" class="state-sub"></span>
+          <div id="prepMeeting" class="prep" hidden></div>
+        </div>
+        <div id="fileActions" class="transport-end" hidden>
+          <button id="copyPath" class="btn" title="Путь к файлу расшифровки, чтобы отдать его агенту">
+            <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Путь к файлу
+          </button>
+          <button id="openDir" class="btn icon" title="Открыть папку с записями" aria-label="Открыть папку с записями">
+            <svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>
+          </button>
+        </div>
       </div>
+      <div id="boostMeeting" class="boost" hidden></div>
     </div>
 
     <div id="tracks" class="tracks" data-tone="check">
@@ -143,19 +178,21 @@
               <span class="ck"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span>
               <b>Звук в наушниках</b><span class="ck-text">включи видео или музыку</span>
             </li>
-            <li id="ckAsr" class="asr" data-state="ok">
+            <li id="ckAsr" class="asr" data-state="wait">
               <span class="ck"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span>
               <b>Распознавание</b><span class="ck-text"><span id="ckAsrText">…</span>
                 <button id="ckAsrEdit" class="link">поменять</button></span>
             </li>
           </ul>
+          <p id="monitorNote" class="monitor-note" data-on="false">Микрофон и наушники слушаются только для индикатора:
+            пока не начнёшь запись, звук нигде не сохраняется и никуда не уходит.</p>
           <p class="hint">
             <svg class="ic" aria-hidden="true"><use href="#i-headphones"/></svg>
             Сиди в наушниках. Из колонок микрофон услышит собеседника, и реплики перепутаются.
           </p>
         </div>
-        <p id="waitFirst" class="wait-first" hidden>Первая реплика появится здесь через пару секунд
-          после того, как кто-то договорит фразу.</p>
+        <p id="waitFirst" class="wait-first" hidden>Первая реплика появится здесь, когда кто-то
+          договорит фразу и она распознаётся.</p>
         <div id="lines" class="utts"></div>
       </div>
       <button id="toBottom" class="btn to-bottom" hidden>
@@ -177,6 +214,8 @@
         <div class="art" style="--src:url(img/line-mic.webp); width:150px; height:112px"></div>
       </header>
 
+      <div id="prepSetup" class="prep prep-page" hidden></div>
+
       <div class="row">
         <div class="row-label">Банк вопросов</div>
         <div class="row-field">
@@ -184,15 +223,33 @@
           <div class="own">
             <button id="ivOwnToggle" class="link">Сделать свой банк под вакансию</button>
             <div id="ivOwn" class="own-box" hidden>
-              <p>Банк это YAML-файл в папке «вопросы», программа подхватит его сама.
-                Скопируй запрос, допиши в конец текст вакансии и отправь в любой чат
-                с нейросетью. Ответ сохрани в папку файлом с расширением .yaml.</p>
+              <p>Банк вопросов под твою вакансию сделает любая нейросеть. Скопируй запрос,
+                отправь его в чат с нейросетью и вставь ответ сюда, остальное программа сделает сама.</p>
+
+              <label class="own-label" for="ivVacancy">Текст вакансии<small>если пусто, роль допишешь в чате сам</small></label>
+              <textarea id="ivVacancy" rows="4" spellcheck="false"
+                        placeholder="Скопируй сюда описание вакансии с сайта"></textarea>
               <div class="btns">
                 <button id="ivCopyBankPrompt" class="btn">
                   <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Скопировать запрос
                 </button>
-                <button id="ivBanksDir" class="btn quiet">
-                  <svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Открыть папку
+              </div>
+
+              <label class="own-label" for="ivReply">Вставь ответ нейросети</label>
+              <textarea id="ivReply" rows="6" spellcheck="false"
+                        placeholder="Ответ целиком, вместе с блоком кода"></textarea>
+              <div class="btns">
+                <button id="ivSaveBank" class="btn primary">Проверить и сохранить</button>
+                <button id="ivBanksDir" class="btn quiet" title="Банки лежат в папке «вопросы» файлами, новые программа находит сама">
+                  <svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Открыть папку с банками
+                </button>
+              </div>
+
+              <div id="ivBankResult" class="bank-result" data-kind="good" role="status" aria-live="polite" hidden>
+                <p id="ivBankResultHead"></p>
+                <ul id="ivBankResultList"></ul>
+                <button id="ivCopyFix" class="btn" hidden>
+                  <svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Скопировать просьбу исправить
                 </button>
               </div>
             </div>
@@ -269,6 +326,11 @@
           <span id="ivCategory" class="cat"></span>
           <h1 id="ivQuestion" class="question"></h1>
           <p id="ivTarget"></p>
+          <div id="prepAsk" class="prep" hidden></div>
+          <details id="ivNote" class="note-hint" hidden>
+            <summary>Подсказка</summary>
+            <p id="ivNoteText"></p>
+          </details>
 
           <div class="timeline">
             <canvas id="waveTake" class="wave" aria-label="Дорожка ответа"></canvas>
@@ -380,8 +442,8 @@
     <div class="ar-main">
       <div id="arEmpty" class="empty">
         <div class="art" style="--src:url(img/line-reel.webp)"></div>
-        <h2>Выбери запись слева</h2>
-        <p>Здесь лежат расшифровки встреч и разборы тренировок. Поиск ищет по тексту внутри них.</p>
+        <h2 id="arEmptyTitle">Выбери запись слева</h2>
+        <p id="arEmptyText">Здесь лежат расшифровки встреч и разборы тренировок. Поиск ищет по тексту внутри них.</p>
       </div>
 
       <article id="arView" class="ar-view" hidden>
@@ -446,6 +508,8 @@
       </header>
 
       <h2 class="section-title">Распознавание речи</h2>
+      <p id="stLock" class="hw" data-kind="warn" hidden>Запись идёт или запускается, поэтому распознавание сейчас не меняется.
+        Поля откроются, когда она закончится.</p>
       <div class="row">
         <div class="row-label">Где распознавать<small id="stNow"></small></div>
         <div class="row-field">
@@ -464,6 +528,8 @@
             <select id="stModel"></select>
             <p id="stModelNote" class="help"></p>
             <p id="stHardware" class="hw"></p>
+            <div id="boostSettings" class="boost" hidden></div>
+            <div id="prepSettings" class="prep" hidden></div>
           </div>
         </div>
       </div>
@@ -481,6 +547,8 @@
           <div class="row-field">
             <input id="stUrl" name="server" type="url" placeholder="http://localhost:8000/v1"
                    spellcheck="false" autocomplete="off">
+            <p id="stUrlHint" class="help" hidden></p>
+            <p id="stUrlNote" class="privacy" hidden></p>
           </div>
         </div>
         <div class="row">
@@ -506,14 +574,19 @@
             </div>
             <p class="help">Хранится в диспетчере учётных данных Windows, а не в файле.
               <button id="stKeysLink" class="link">Где взять ключ</button></p>
-            <p class="privacy">Звук реплик уходит на сервер. Разговоры под NDA распознавай на этом компьютере.</p>
+            <p class="privacy">На сервер уходит звук обеих сторон разговора, а вместе с ним подсказка из
+              твоего глоссария (имена и термины), если сервис её принимает. Разговоры под NDA
+              распознавай на этом компьютере.</p>
           </div>
         </div>
       </div>
 
       <div class="row">
         <div class="row-label"><label for="stLang">Язык разговора</label></div>
-        <div class="row-field"><select id="stLang"></select></div>
+        <div class="row-field">
+          <select id="stLang"></select>
+          <p id="stGlossaryNote" class="hw" data-kind="warn" hidden></p>
+        </div>
       </div>
 
       <div class="save-row">
@@ -549,6 +622,12 @@
             <button id="stOpenRecords" class="btn"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Папка с записями</button>
             <button id="stOpenBanks" class="btn"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg>Папка с банками</button>
           </div>
+        </div>
+      </div>
+      <div id="stPatternsRow" class="row" hidden>
+        <div class="row-label">Словари речи</div>
+        <div class="row-field">
+          <p id="stPatterns" class="hw" data-kind="warn"></p>
         </div>
       </div>
     </div>
